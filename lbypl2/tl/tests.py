@@ -3,10 +3,10 @@ from .models import Providers
 
 # Create your tests here.
 
-# 1 - test for same UUID before and after update
-# 2- test for 200 status and processing of updates
-# 3 - test that token new has a model with field count -2 = json dict keys. \
-# we add user_id and provider_id to the json so if it grows then the
+# todo 1 - test for same UUID before and after update
+# todo 2 - test for 200 status and processing of updates
+# todo 3 - test that token new has a model with field count -2 = json dict keys.
+# todo 4 - test that there is only 1 token per user / provider_id combination
 
 class ProviderTests(TestCase):
 
