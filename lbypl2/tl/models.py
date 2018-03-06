@@ -3,7 +3,7 @@ import requests
 from django.db import models
 from django.utils import timezone
 from django.contrib.auth.models import User
-from datetime import datetime
+from datetime import datetime, timedelta
 from django.conf import settings
 from django.http import HttpRequest
 
@@ -38,7 +38,7 @@ class Providers(models.Model):
     display_name = models.CharField(max_length=250)
     logo_url = models.TextField()
     scopes = models.TextField()
-    last_update = models.DateTimeField(default=datetime.utcnow())
+    last_update = models.DateTimeField(default=timezone.now())
 
     class Meta:
         verbose_name = "TrueLayer Provider"
@@ -104,7 +104,7 @@ class Token(models.Model):
     token_type = models.TextField()
 
     def __str__(self):
-        return self.refresh_token
+        return ("UID : %s - Provider : %s" % (self.user,self.provider_id))
 
     @classmethod
     def token_exists(cls, username, provider_id):
@@ -116,6 +116,30 @@ class Token(models.Model):
         # refresh token for the given user and provider combination
         user = User.objects.get(username=username)
         return cls.objects.filter(user_id=user.id,provider_id=provider_id)[0].refresh_token
+
+    @classmethod
+    def get_access_token(cls, username, provider_id):
+        # check if the token is still valid. If so, return access token. If not, refresh then return.
+
+        user = User.objects.get(username=username)
+        # get the expiry value for the current token
+        v = cls.objects.values('r_lasttime', 'expires_in', 'access_token').filter(user_id=user.id, provider_id=provider_id)[0]
+
+        r_lasttime = v['r_lasttime']
+        r_sec = v['expires_in'] - 120  # use an expiry somewhat shorter in case processing time expires a token prior to using it
+
+        # set expiry value
+        expiry = timedelta(seconds=r_sec) + r_lasttime
+
+        if timezone.now() < expiry:  # issue the existing code
+            return (v['access_token'])
+        else:  # requests a new token and return it
+            status=Token.update_refresh_token(username,provider_id)
+            if status['code'] == 200:
+                return cls.objects.filter(user_id=user.id, provider_id=provider_id)[0].access_token
+            else:
+                status = {'code': 400, 'desc': 'Token refresh failed.'}
+                return (status)
 
     @classmethod
     def new_token(cls, username, provider_id, access_code):
@@ -132,7 +156,7 @@ class Token(models.Model):
             tl_info=TL_info.url_access()
             payload = {'grant_type': 'authorization_code', 'client_id': tl_info['client_id'], \
                        'client_secret': tl_info['client_secret'], 'redirect_uri': tl_info['redirect_uri'], 'code': access_code}
-            this_update = datetime.utcnow()
+            this_update = timezone.now()
             z = requests.post(tl_info['token_url'], data=payload)  # call truelayer to get the token and set the call time
 
             # check the api response and process or fail out
@@ -175,7 +199,7 @@ class Token(models.Model):
             tl_info=TL_info.url_access()
             payload = {'grant_type': 'refresh_token', 'client_id': tl_info['client_id'], \
                        'client_secret': tl_info['client_secret'], 'refresh_token': refresh_token}
-            this_update = datetime.utcnow()
+            this_update = timezone.now()
             z = requests.post(tl_info['token_url'], data=payload)  # call truelayer to get the token and set the call time
 
             # check the api response and process or fail out
@@ -201,3 +225,4 @@ class Token(models.Model):
             else:
                 status = {'code': 400, 'desc': 'API failure. Test for TrueLayer connectivity to token request APIs.'}
                 return (status)
+
