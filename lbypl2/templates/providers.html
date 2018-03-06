@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+
+{% block title %}Link Your Account{% endblock %}
+
+{% block content %}
+    <h2>Providers Page</h2>
+    <table style="width:40%" cellpadding="5">
+        {% for providers in object_list %}
+        <tr>
+            <td style="width:80%">{{providers.display_name}}</td>
+            <td><img src={{providers.logo_url}} height="42" width="42"> </td>
+        </tr>
+        {% endfor %}
+    </table>
+
+{% endblock %}

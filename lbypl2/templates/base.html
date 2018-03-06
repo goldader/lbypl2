@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+
+{% load staticfiles %}
+
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{% block title %} Base Page {% endblock %} </title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" type="text/css" href="{% static '/css/main.css' %}" />
+</head>
+<body>
+
+    <!-- Header -->
+			<header id="header">
+				<nav class="left">
+					<a href="#menu"><span>Menu</span></a>
+				</nav>
+				<a href="{% url 'home' %}" class="logo">New Loyalty</a>
+				<nav class="right">
+					<!-- <a href="{% url 'signup' %}" class="button alt">Sign Up</a> -->
+                    {% if user.is_authenticated %}
+                        <h4> Welcome back {{ user.username }}</h4>
+                        <h7><a href="{% url 'logout' %}">Logout</a> </h7>
+                    {% else %}
+                        <a href="{% url 'signup' %}" class="button alt">Sign Up</a>
+                    {% endif %}
+				</nav>
+			</header>
+
+    <!-- Menu -->
+			<nav id="menu">
+				<ul class="links">
+					<li><a href="{% url 'home' %}">Home</a></li>
+					<li><a href="{% url 'signup' %}">Sign Up</a></li>
+					<li><a href="{% url 'login' %}">Log In</a></li>
+                    <li><a href="{% url 'providers' %}">Providers</a></li>
+				</ul>
+				<ul class="actions vertical">
+					<li><a href="#" class="button fit">Sign Up</a></li>
+				</ul>
+			</nav>
+
+    <!-- templates/base.html -->
+
+    <body>
+      <main>
+        {% block content %}
+        {% endblock %}
+      </main>
+    </body>
+</body>
+</html>
