@@ -53,12 +53,13 @@ def json_output(json_input):
         return(dataset)
 
 class TL_info(models.Model):
-    client_id = models.TextField(primary_key=True)
-    app_name = models.CharField(max_length=250)
-    client_secret = models.TextField()
-    redirect_uri = models.TextField()
-    token_url = models.TextField()
-    info_url = models.TextField()
+    client_id = models.CharField(primary_key=True,max_length=100)
+    app_name = models.CharField(max_length=50)
+    client_secret = models.CharField(max_length=100)
+    redirect_uri = models.URLField()
+    token_url = models.URLField()
+    info_url = models.URLField()
+    provider_url = models.URLField()
 
     def __str__(self):
         return self.app_name
@@ -76,12 +77,13 @@ class TL_info(models.Model):
         l['redirect_uri'] = cls.objects.filter(app_name=app_name)[0].redirect_uri
         l['token_url'] = cls.objects.filter(app_name=app_name)[0].token_url
         l['info_url'] = cls.objects.filter(app_name=app_name)[0].info_url
+        l['provider_url'] = cls.objects.filter(app_name=app_name)[0].provider_url
         return l
 
 class Providers(models.Model):
-    provider_id = models.CharField(primary_key=True, max_length=250)
-    display_name = models.CharField(max_length=250)
-    logo_url = models.TextField()
+    provider_id = models.CharField(primary_key=True, max_length=50)
+    display_name = models.CharField(max_length=150)
+    logo_url = models.URLField()
     scopes = models.TextField()
     last_update = models.DateTimeField(default=timezone.now())
 
@@ -115,22 +117,20 @@ class Providers(models.Model):
     @classmethod
     def update_providers(cls):
         # Use to populate and update the providers table.
-        url = "https://auth.truelayer.com/api/providers"
+        url = TL_info.url_access()['provider_url']
         z = requests.get(url)
         # check API status code and if OK, process an update or an insert
-        if z.status_code==200:
-            my_dict = {}
-            providers = (z.json()) # todo add a check for the provider here.  if provider_id not in table run providers update first
-            for i in range(0,len(providers)):
-                my_dict = providers[i]
-                provider = cls(
-                    provider_id=my_dict["provider_id"].lower(),
-                    display_name=my_dict["display_name"],
-                    logo_url=my_dict["logo_url"],
-                    scopes=my_dict["scopes"],
-                    last_update=timezone.now(),
-                )
-                provider.save()
+        if z.status_code == 200:
+            for obj in simplejson.loads(z.content):
+                provider = cls(provider_id = obj['provider_id'],
+                               display_name = obj['display_name'],
+                               logo_url = obj['logo_url'],
+                               scopes = obj['scopes']
+                               )
+                try:
+                    provider.save()
+                except:
+                    raise Exception("There has been a unknown error in the database")
             status={'code':200,'desc':'Success'}
             return(status)
         else:
@@ -376,23 +376,3 @@ class Tl_model_updates(models.Model):
     fields_to_add = models.TextField() # name of the fields in json data that is not in the model
     method_to_recall = models.TextField() # name of the update routine required to be re-run once the model is up to date
     details_to_pass = models.TextField() # details such as username and provider id required to re-run the routine
-
-class Json_test(models.Model):
-    provider_id = models.TextField(primary_key=True)
-    display_name = models.TextField()
-    logo_url = models.URLField()
-    scopes = models.TextField()
-    #last_update = models.TextField()
-
-    @classmethod
-    def get_data(cls):
-        url = "https://auth.truelayer.com/api/providers"
-        z = requests.get(url)
-        print(z.headers)
-        print(z.text)
-
-        for obj in serializers.deserialize('json',stream_or_string=z.text, ensure_ascii=False, ignorenonexistent=True):
-            print(obj)
-
-        #for obj in simplejson.loads(z.content):
-        #    print(obj)
