@@ -154,6 +154,7 @@ class Token(models.Model):
     class Meta:
         verbose_name = "User Token"
         verbose_name_plural = "User Tokens"
+        unique_together = []
 
     @classmethod
     def token_exists(cls, username, provider_id):
@@ -279,33 +280,14 @@ class User_info(models.Model):
     # gathers user information from TrueLayer as provided by the bank
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     provider_id = models.ForeignKey(Providers, unique=False, on_delete=models.DO_NOTHING)
-    update_timestamp = models.DateTimeField()
     full_name = models.TextField()
-    addresses_address = models.TextField()
-    addresses_city = models.TextField()
-    addresses_zip = models.CharField(max_length=50)
-    addresses_country = models.CharField(max_length=150)
-    emails = models.EmailField()
-    emails_1 = models.EmailField()
-    emails_2 = models.EmailField()
-    phones = models.CharField(max_length=50)
-    phones_1 = models.CharField(max_length=50)
-    phones_2 = models.CharField(max_length=50)
-    account_id = models.TextField()
-    account_type = models.TextField()
-    display_name = models.TextField()
-    currency = models.CharField(max_length=50)
-    account_number_iban = models.CharField(max_length=50)
-    account_number_swift_bic = models.CharField(max_length=15)
-    account_number_number = models.CharField(max_length=50)
-    account_number_sort_code = models.CharField(max_length=15)
-    provider_display_name = models.TextField()
-    provider_provider_id = models.CharField(max_length=250)
-    provider_logo_uri = models.TextField()
+    date_of_birth = models.DateTimeField()
+    update_timestamp = models.DateTimeField()
 
     class Meta:
         verbose_name = "User Information - Bank Provided"
         verbose_name_plural = "User Information - Bank Provided"
+        unique_together = (('user', 'provider_id', 'full_name', 'date_of_birth'),)
 
     @property
     def fields(self):
@@ -323,53 +305,110 @@ class User_info(models.Model):
         token_phrase = "Bearer %s" % token
         headers = {'Authorization': token_phrase}
         z = requests.get(access_info['info_url'], headers=headers)
-        results = z.json()['results']
+        #results = z.json()['results']
 
         # send results to json parsing routines
-        results = json_output(results[0])
+        # results = json_output(results[0])
 
-        # check if the json fields map to the db and generate a data update and missing fields list
-        field_list = [f.name for f in User_info._meta.fields]
-        missing_fields=[]
-        data_to_update = "user_id = user.id, provider_id = Providers.objects.get(provider_id=provider_id),"
-        count=1
-        for k,v in results.items():
-            if k in field_list:
-                if count<len(results.keys()):
-                    data_to_update+="%s = '%s'," % (k,v)
-                else:
-                    data_to_update+="%s = '%s'" % (k,v)
-                count+=1
-            else:
-                count+=1
-                missing_fields.append(k)
+        # check API status code and if OK, process an update or an insert
+        if z.status_code == 200:
+            for obj in simplejson.loads(z.content):
+                user_info = cls(user_id = user.id,
+                                provider_id = Providers.objects.get(provider_id=provider_id),
+                                full_name = obj['full_name'],
+                                date_of_birth = obj['date_of_birth'],
+                                update_timestamp = obj['update_timestamp']
+                                )
+                try:
+                    user_info.save()
+                except:
+                    raise Exception('Unknown db error')
+                if 'addresses' in obj.keys():
+                    for i in range(0,len(obj['addresses'])):
+                        user_address = User_addresses(user_id = user.id,
+                                                      provider_id = Providers.objects.get(provider_id = provider_id),
+                                                      address = obj['address'],
+                                                      city = obj['city'],
+                                                      zip = obj['zip'],
+                                                      country = obj['country'],
+                                                      update_timestamp = obj['update_timestamp']
+                                                      )
+                        try:
+                            user_address.save()
+                        except:
+                            raise Exception('Unknown db error')
+                if 'phones' in obj.keys():
+                    for i in range(0,len(obj['phones'])):
+                        user_phone = User_phones(user_id = user.id,
+                                                 provider_id = Providers.objects.get(provider_id = provider_id),
+                                                 phones = obj['phones'],
+                                                 update_timestamp = obj['update_timestamp']
+                                                 )
+                        try:
+                            user_phone.save()
+                        except:
+                            raise Exception('Unknown db error')
+                if 'emails' in obj.keys():
+                    for i in range(0,len(obj['emails'])):
+                        user_email = User_emails(user_id = user.id,
+                                                 provider_id = Providers.objects.get(provider_id = provider_id),
+                                                 emails = obj['emails'],
+                                                 update_timestamp = obj['update_timestamp']
+                                                 )
+                        try:
+                            user_email.save()
+                        except:
+                            raise Exception('Unknown db error')
+            status={'code':200,'desc':'Success'}
+            return(status)
+        else:
+            status={'code':400,'desc':'True Layer API Failure'}
+            return(status)
 
-        # check if there are any missing fields.  If so, write to the error model
-        if len(missing_fields)>0:
-            model_to_update = str(cls._meta.label)
-            data_update=Tl_model_updates(
-                model_to_update= model_to_update,
-                fields_to_add = missing_fields,
-                method_to_recall = 'get_tl_user_info_update',  # Todo refactor to get the method name dynamically
-                details_to_pass = [username,provider_id]
-            )
-            data_update.save()
-            status = {'code': 201, 'desc': 'Partial update. Check Tl_model_updates for required updates.'} # Todo figure out how to use Raise for errors
-            #return(status)
+class User_addresses(models.Model):
+    # stores user address info provided by banks
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    provider_id = models.ForeignKey(Providers, unique=False, on_delete=models.DO_NOTHING)
+    address = models.TextField()
+    city = models.TextField()
+    zip = models.CharField(max_length=50)
+    country = models.CharField(max_length=150)
+    update_timestamp = models.DateTimeField()
 
-        # write the real results to the model
-        print(data_to_update)
+    class Meta:
+        unique_together = (('user', 'provider_id'),)
 
-        #data_update=cls(data_to_update)
-        #data_update = cls(data_update)
-        #data_update.save
+    @property
+    def fields(self):
+        return [f.name for f in self._meta.fields]
 
-        #if status == None:
-        #    status = {'code': 200, 'desc': 'Success'}
-        #    return (status)
-        #else:
-        #    return(status)
-        # quit the routine, write the data to the missing data model
+class User_phones(models.Model):
+    # stores user phone info provided by banks
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    provider_id = models.ForeignKey(Providers, unique=False, on_delete=models.DO_NOTHING)
+    phones = models.CharField(max_length=50)
+    update_timestamp = models.DateTimeField()
+
+    class Meta:
+        unique_together = (('user', 'provider_id', 'phones'),)
+
+    @property
+    def fields(self):
+        return [f.name for f in self._meta.fields]
+
+class User_emails(models.Model):
+    # stores user phone info provided by banks
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    provider_id = models.ForeignKey(Providers, unique=False, on_delete=models.DO_NOTHING)
+    emails = models.EmailField()
+    update_timestamp = models.DateTimeField()
+
+    class Meta:
+        unique_together = (('user', 'provider_id', 'emails'),)
+
+    @property
+    def fields(self):
+        return [f.name for f in self._meta.fields]
 
 class Tl_model_updates(models.Model):
     model_to_update = models.TextField() # name of the model
