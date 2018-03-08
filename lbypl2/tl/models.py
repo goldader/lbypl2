@@ -5,7 +5,8 @@ from django.utils import timezone
 from django.contrib.auth.models import User
 from datetime import datetime, timedelta
 from django.conf import settings
-from django.http import HttpRequest
+from django.core import serializers
+import simplejson
 
 # Create your models here.
 
@@ -74,6 +75,7 @@ class TL_info(models.Model):
         l['client_id'] = cls.objects.filter(app_name=app_name)[0].client_id
         l['redirect_uri'] = cls.objects.filter(app_name=app_name)[0].redirect_uri
         l['token_url'] = cls.objects.filter(app_name=app_name)[0].token_url
+        l['info_url'] = cls.objects.filter(app_name=app_name)[0].info_url
         return l
 
 class Providers(models.Model):
@@ -189,7 +191,7 @@ class Token(models.Model):
                 return (status)
 
     @classmethod
-    def new_token(cls, username, provider_id, access_code):
+    def get_new_token(cls, username, provider_id, access_code):
         # use to acquire a new access token from truelayer and update it in the database
         # requires the front end to have already been provided an authorisation token called access_code
 
@@ -279,16 +281,16 @@ class User_info(models.Model):
     provider_id = models.ForeignKey(Providers, unique=False, on_delete=models.DO_NOTHING)
     update_timestamp = models.DateTimeField()
     full_name = models.TextField()
-    address = models.TextField()
-    city = models.TextField()
-    zip = models.CharField(max_length=50)
-    country = models.CharField(max_length=150)
-    emails = models.TextField()
-    emails_1 = models.TextField()
-    emails_2 = models.TextField()
+    addresses_address = models.TextField()
+    addresses_city = models.TextField()
+    addresses_zip = models.CharField(max_length=50)
+    addresses_country = models.CharField(max_length=150)
+    emails = models.EmailField()
+    emails_1 = models.EmailField()
+    emails_2 = models.EmailField()
     phones = models.CharField(max_length=50)
+    phones_1 = models.CharField(max_length=50)
     phones_2 = models.CharField(max_length=50)
-    phones_3 = models.CharField(max_length=50)
     account_id = models.TextField()
     account_type = models.TextField()
     display_name = models.TextField()
@@ -305,11 +307,92 @@ class User_info(models.Model):
         verbose_name = "User Information - Bank Provided"
         verbose_name_plural = "User Information - Bank Provided"
 
+    @property
+    def fields(self):
+        return [f.name for f in self._meta.fields]
 
+    @classmethod
+    def get_tl_user_info_update(cls, username, provider_id):
 
+        # identify the user and get an access token
+        user = User.objects.get(username=username)
+        token = Token.get_access_token(username, provider_id)
+
+        # call truelayer for user info updates
+        access_info = TL_info.url_access()
+        token_phrase = "Bearer %s" % token
+        headers = {'Authorization': token_phrase}
+        z = requests.get(access_info['info_url'], headers=headers)
+        results = z.json()['results']
+
+        # send results to json parsing routines
+        results = json_output(results[0])
+
+        # check if the json fields map to the db and generate a data update and missing fields list
+        field_list = [f.name for f in User_info._meta.fields]
+        missing_fields=[]
+        data_to_update = "user_id = user.id, provider_id = Providers.objects.get(provider_id=provider_id),"
+        count=1
+        for k,v in results.items():
+            if k in field_list:
+                if count<len(results.keys()):
+                    data_to_update+="%s = '%s'," % (k,v)
+                else:
+                    data_to_update+="%s = '%s'" % (k,v)
+                count+=1
+            else:
+                count+=1
+                missing_fields.append(k)
+
+        # check if there are any missing fields.  If so, write to the error model
+        if len(missing_fields)>0:
+            model_to_update = str(cls._meta.label)
+            data_update=Tl_model_updates(
+                model_to_update= model_to_update,
+                fields_to_add = missing_fields,
+                method_to_recall = 'get_tl_user_info_update',  # Todo refactor to get the method name dynamically
+                details_to_pass = [username,provider_id]
+            )
+            data_update.save()
+            status = {'code': 201, 'desc': 'Partial update. Check Tl_model_updates for required updates.'} # Todo figure out how to use Raise for errors
+            #return(status)
+
+        # write the real results to the model
+        print(data_to_update)
+
+        #data_update=cls(data_to_update)
+        #data_update = cls(data_update)
+        #data_update.save
+
+        #if status == None:
+        #    status = {'code': 200, 'desc': 'Success'}
+        #    return (status)
+        #else:
+        #    return(status)
+        # quit the routine, write the data to the missing data model
 
 class Tl_model_updates(models.Model):
-    model_to_update = models.TextField()
-    fields_to_add = models.TextField()
-    method_to_recall = models.TextField()
-    details_to_pass = models.TextField()
+    model_to_update = models.TextField() # name of the model
+    fields_to_add = models.TextField() # name of the fields in json data that is not in the model
+    method_to_recall = models.TextField() # name of the update routine required to be re-run once the model is up to date
+    details_to_pass = models.TextField() # details such as username and provider id required to re-run the routine
+
+class Json_test(models.Model):
+    provider_id = models.TextField(primary_key=True)
+    display_name = models.TextField()
+    logo_url = models.URLField()
+    scopes = models.TextField()
+    #last_update = models.TextField()
+
+    @classmethod
+    def get_data(cls):
+        url = "https://auth.truelayer.com/api/providers"
+        z = requests.get(url)
+        print(z.headers)
+        print(z.text)
+
+        for obj in serializers.deserialize('json',stream_or_string=z.text, ensure_ascii=False, ignorenonexistent=True):
+            print(obj)
+
+        #for obj in simplejson.loads(z.content):
+        #    print(obj)
