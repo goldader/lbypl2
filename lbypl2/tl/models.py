@@ -259,7 +259,7 @@ class Token(models.Model):
 
                 # translate the temp_dict / json into a database write procedure
                 data_update=cls(
-                    id = Token.objects.get(user_id=user.id, provider_id=provider_id).id,
+                    id=Token.objects.get(user_id=user.id, provider_id=provider_id).id,
                     user_id = user.id,
                     provider_id = Providers.objects.get(provider_id=provider_id),
                     access_token = temp_dict['access_token'],
@@ -269,9 +269,12 @@ class Token(models.Model):
                     token_type = temp_dict['token_type']
                 )
                 # save the data
-                data_update.save()
-                status = {'code': 200, 'desc': 'Success'}
-                return (status)
+                try:
+                    data_update.save()
+                    status = {'code': 200, 'desc': 'Success'}
+                    return (status)
+                except:
+                    raise Exception('Unknown db error')
             else:
                 status = {'code': 400, 'desc': 'API failure. Test for TrueLayer connectivity to token request APIs.'}
                 return (status)
@@ -281,13 +284,13 @@ class User_info(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     provider_id = models.ForeignKey(Providers, unique=False, on_delete=models.DO_NOTHING)
     full_name = models.TextField()
-    date_of_birth = models.DateTimeField(default=None)
+    date_of_birth = models.DateTimeField(default=None, null=True)
     update_timestamp = models.DateTimeField()
 
     class Meta:
         verbose_name = "User Information - Bank Provided"
         verbose_name_plural = "User Information - Bank Provided"
-        unique_together = (('user', 'provider_id', 'full_name', 'date_of_birth'),)
+        unique_together = (('user','provider_id','full_name'),)
 
     @property
     def fields(self):
@@ -321,7 +324,7 @@ class User_info(models.Model):
                 update_time = results[i]['update_timestamp']
                 for field in User_info.include_fields():
                     if field not in results[i].keys():
-                        results[i][field]=''
+                        results[i][field]=None
                 print(results[i])
                 user_info = cls(user_id = user.id,
                                 provider_id = Providers.objects.get(provider_id=provider_id),
