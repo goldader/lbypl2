@@ -7,6 +7,10 @@ from .models import Providers
 # todo 2 - test for 200 status and processing of updates
 # todo 3 - test that token new has a model with field count -2 = json dict keys.
 # todo 4 - test that there is only 1 token per user / provider_id combination
+# todo 5 - test that multiple addresses does not break User_info
+# todo 6 - test that multiple phones or emails does not break User_info
+# todo 7 - test that json with extra shit doesn't break user_info
+# todo 8 - test that a bum api forces user_info to fail nicely
 
 class ProviderTests(TestCase):
 

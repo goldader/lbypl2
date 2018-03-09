@@ -146,7 +146,7 @@ class Token(models.Model):
     refresh_token = models.TextField()
     r_lasttime = models.DateTimeField()
     expires_in = models.IntegerField()
-    token_type = models.TextField()
+    token_type = models.CharField(max_length=50)
 
     def __str__(self):
         return ("UID : %s - Provider : %s" % (self.user,self.provider_id))
@@ -294,6 +294,12 @@ class User_info(models.Model):
         return [f.name for f in self._meta.fields]
 
     @classmethod
+    def include_fields(cls):
+        exclude_list = ['user','id','provider_id']
+        field_list = [f.name for f in User_info._meta.fields if f.name not in exclude_list]
+        return field_list
+
+    @classmethod
     def get_tl_user_info_update(cls, username, provider_id):
 
         # identify the user and get an access token
@@ -313,6 +319,10 @@ class User_info(models.Model):
             for i in range(0,len(results)):
                 print(results[i])
                 update_time = results[i]['update_timestamp']
+                for field in User_info.include_fields():
+                    if field not in results[i].keys():
+                        results[i][field]=''
+                print(results[i])
                 user_info = cls(user_id = user.id,
                                 provider_id = Providers.objects.get(provider_id=provider_id),
                                 full_name = results[i]['full_name'],
@@ -320,12 +330,16 @@ class User_info(models.Model):
                                 update_timestamp = update_time
                                 )
                 try:
-                    print(user_info)
-                    #user_info.save()
+                    user_info.save()
                 except:
                     raise Exception('Unknown db error')
                 if 'addresses' in results[i].keys():
                     addresses=results[i]['addresses']
+                    print(addresses)
+                    for field in User_addresses.include_fields():
+                        for j in range(0,len(addresses)):
+                            if field not in addresses[j].keys():
+                                addresses[j][field] = ''
                     for j in range(0,len(addresses)):
                         user_address = User_addresses(user_id = user.id,
                                                       provider_id = Providers.objects.get(provider_id = provider_id),
@@ -336,12 +350,13 @@ class User_info(models.Model):
                                                       update_timestamp = update_time
                                                       )
                         try:
-                            print(user_address)
+                            pass
                             #user_address.save()
                         except:
                             raise Exception('Unknown db error')
                 if 'phones' in results[i].keys():
                     phones=results[i]['phones']
+                    print(phones)
                     for j in range(0,len(phones)):
                         user_phone = User_phones(user_id = user.id,
                                                  provider_id = Providers.objects.get(provider_id = provider_id),
@@ -349,13 +364,14 @@ class User_info(models.Model):
                                                  update_timestamp = update_time
                                                  )
                         try:
-                            print(user_phone)
+                            pass
                             #user_phone.save()
                         except:
                             raise Exception('Unknown db error')
                 if 'emails' in results[i].keys():
                     emails=results[i]['emails']
                     print(emails)
+                    print()
                     for j in range(0,len(results[i]['emails'])):
                         user_email = User_emails(user_id = user.id,
                                                  provider_id = Providers.objects.get(provider_id = provider_id),
@@ -363,7 +379,7 @@ class User_info(models.Model):
                                                  update_timestamp = update_time
                                                  )
                         try:
-                            print(user_email)
+                            pass
                             #user_email.save()
                         except:
                             raise Exception('Unknown db error')
@@ -389,6 +405,12 @@ class User_addresses(models.Model):
     @property
     def fields(self):
         return [f.name for f in self._meta.fields]
+
+    @classmethod
+    def include_fields(cls):
+        exclude_list = ['user','id','provider_id']
+        field_list = [f.name for f in User_info._meta.fields if f.name not in exclude_list]
+        return field_list
 
 class User_phones(models.Model):
     # stores user phone info provided by banks
