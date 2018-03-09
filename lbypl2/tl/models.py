@@ -281,7 +281,7 @@ class User_info(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     provider_id = models.ForeignKey(Providers, unique=False, on_delete=models.DO_NOTHING)
     full_name = models.TextField()
-    date_of_birth = models.DateTimeField()
+    date_of_birth = models.DateTimeField(default=None)
     update_timestamp = models.DateTimeField()
 
     class Meta:
@@ -305,58 +305,66 @@ class User_info(models.Model):
         token_phrase = "Bearer %s" % token
         headers = {'Authorization': token_phrase}
         z = requests.get(access_info['info_url'], headers=headers)
-        #results = z.json()['results']
-
-        # send results to json parsing routines
-        # results = json_output(results[0])
+        results = z.json()['results']
 
         # check API status code and if OK, process an update or an insert
         if z.status_code == 200:
-            for obj in simplejson.loads(z.content):
+            print(results)
+            for i in range(0,len(results)):
+                print(results[i])
+                update_time = results[i]['update_timestamp']
                 user_info = cls(user_id = user.id,
                                 provider_id = Providers.objects.get(provider_id=provider_id),
-                                full_name = obj['full_name'],
-                                date_of_birth = obj['date_of_birth'],
-                                update_timestamp = obj['update_timestamp']
+                                full_name = results[i]['full_name'],
+                                date_of_birth = results[i]['date_of_birth'],
+                                update_timestamp = update_time
                                 )
                 try:
-                    user_info.save()
+                    print(user_info)
+                    #user_info.save()
                 except:
                     raise Exception('Unknown db error')
-                if 'addresses' in obj.keys():
-                    for i in range(0,len(obj['addresses'])):
+                if 'addresses' in results[i].keys():
+                    addresses=results[i]['addresses']
+                    for j in range(0,len(addresses)):
                         user_address = User_addresses(user_id = user.id,
                                                       provider_id = Providers.objects.get(provider_id = provider_id),
-                                                      address = obj['address'],
-                                                      city = obj['city'],
-                                                      zip = obj['zip'],
-                                                      country = obj['country'],
-                                                      update_timestamp = obj['update_timestamp']
+                                                      address = addresses[j]['address'],
+                                                      city = addresses[j]['city'],
+                                                      zip = addresses[j]['zip'],
+                                                      country = addresses[j]['country'],
+                                                      update_timestamp = update_time
                                                       )
                         try:
-                            user_address.save()
+                            print(user_address)
+                            #user_address.save()
                         except:
                             raise Exception('Unknown db error')
-                if 'phones' in obj.keys():
-                    for i in range(0,len(obj['phones'])):
+                if 'phones' in results[i].keys():
+                    phones=results[i]['phones']
+                    for j in range(0,len(phones)):
                         user_phone = User_phones(user_id = user.id,
                                                  provider_id = Providers.objects.get(provider_id = provider_id),
-                                                 phones = obj['phones'],
-                                                 update_timestamp = obj['update_timestamp']
+                                                 phones = phones[j],
+                                                 update_timestamp = update_time
                                                  )
                         try:
-                            user_phone.save()
+                            print(user_phone)
+                            #user_phone.save()
                         except:
                             raise Exception('Unknown db error')
-                if 'emails' in obj.keys():
-                    for i in range(0,len(obj['emails'])):
+                if 'emails' in results[i].keys():
+                    emails=results[i]['emails']
+                    print(emails)
+                    for j in range(0,len(results[i]['emails'])):
                         user_email = User_emails(user_id = user.id,
                                                  provider_id = Providers.objects.get(provider_id = provider_id),
-                                                 emails = obj['emails'],
-                                                 update_timestamp = obj['update_timestamp']
+                                                 emails = emails[j],
+                                                 update_timestamp = update_time
                                                  )
                         try:
-                            user_email.save()
+                            print(user_email)
+                            #user_email.save()
                         except:
                             raise Exception('Unknown db error')
             status={'code':200,'desc':'Success'}
@@ -369,10 +377,10 @@ class User_addresses(models.Model):
     # stores user address info provided by banks
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     provider_id = models.ForeignKey(Providers, unique=False, on_delete=models.DO_NOTHING)
-    address = models.TextField()
-    city = models.TextField()
-    zip = models.CharField(max_length=50)
-    country = models.CharField(max_length=150)
+    address = models.TextField(default=None)
+    city = models.CharField(max_length=150, default=None)
+    zip = models.CharField(max_length=50, default=None)
+    country = models.CharField(max_length=150, default=None)
     update_timestamp = models.DateTimeField()
 
     class Meta:
