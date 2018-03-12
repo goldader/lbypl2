@@ -9,9 +9,9 @@ class EmailInLine(admin.TabularInline):
 
 class Tl_user_admin(admin.ModelAdmin):
     fieldsets = [
-        ('User Details', {'fields': ['user', 'full_name', 'date_of_birth']}),
-        ('Bank', {'fields': ['provider_id']}),
-        ('Update', {'fields': ['update_timestamp']})
+        ('Credential ID', {'fields': ['credentials_id']}),
+        ('User Details', {'fields': ['full_name', 'date_of_birth']}),
+        ('Last Update', {'fields': ['update_timestamp']})
     ]
 #    inlines = [EmailInLine]
 

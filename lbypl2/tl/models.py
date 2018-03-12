@@ -206,7 +206,8 @@ class Token(models.Model):
                 status=Token.update_refresh_token(v[i]['credentials_id'])
                 if status['code']==400:
                     return {'code': 400, 'desc': 'Token refresh failed.'}
-        return [t['access_token'] for t in cls.objects.values('access_token').filter(user_id=user.id)]
+        # [(t['access_token'],t['credentials_id']) for t in cls.objects.values('access_token').filter(user_id=user.id)]
+        return (cls.objects.values('credentials_id', 'access_token').filter(user_id=user.id))
 
     @classmethod # todo add a test to simply see if it works
     def get_token_metadata(cls,access_token):
@@ -314,10 +315,7 @@ class Token(models.Model):
 
 class User_info(models.Model):
     # gathers user information from TrueLayer as provided by the bank
-    # todo update the model to include token_id as a Foreign_Key
-    credentials_id = models.ForeignKey(Token, unique=True, on_delete=models.DO_NOTHING)
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
-    provider_id = models.ForeignKey(Providers, unique=False, on_delete=models.DO_NOTHING)
+    credentials_id = models.ForeignKey(Token, unique=False, on_delete=models.DO_NOTHING)
     full_name = models.TextField()
     date_of_birth = models.DateTimeField(default=None, null=True)
     update_timestamp = models.DateTimeField()
@@ -333,113 +331,142 @@ class User_info(models.Model):
 
     @classmethod
     def include_fields(cls):
-        exclude_list = ['user','id','provider_id']
-        field_list = [f.name for f in User_info._meta.fields if f.name not in exclude_list]
-        return field_list
+        exclude_list = ['credentials_id', 'id']
+        return [f.name for f in User_info._meta.fields if f.name not in exclude_list]
 
     @classmethod
-    def get_tl_user_info_update(cls, username, provider_id):
+    def get_tl_user_info_update(cls, username):
 
-        # identify the user and get an access token
-        user = User.objects.get(username=username)
-        token = Token.get_access_tokens(username, provider_id)
-        # todo, update the get_access method to return both the access token and the id
-
-        # call truelayer for user info updates
+        # get the correct url string for info updates
         access_info = TL_info.url_access()
-        token_phrase = "Bearer %s" % token
-        headers = {'Authorization': token_phrase}
-        z = requests.get(access_info['info_url'], headers=headers)
-        results = z.json()['results']
 
-        # check API status code and if OK, process an update or an insert
-        if z.status_code == 200:
-            print(results)
-            for i in range(0,len(results)):
-                print(results[i])
-                update_time = results[i]['update_timestamp']
-                for field in User_info.include_fields():
-                    if field not in results[i].keys():
-                        results[i][field]=None
-                print(results[i])
-                user_info = cls(user_id = user.id, # todo, update the method to write token_id, remove user and provider
-                                provider_id = Providers.objects.get(provider_id=provider_id),
-                                full_name = results[i]['full_name'],
-                                date_of_birth = results[i]['date_of_birth'],
-                                update_timestamp = update_time
-                                )
+        # get all access tokens for a given user
+        token_list = Token.get_access_tokens(username)
+
+        # iterate over the tokens to get all information
+        for token in token_list:
+            token_phrase = "Bearer %s" % token['access_token']
+            headers = {'Authorization': token_phrase}
+            z = requests.get(access_info['info_url'], headers=headers)
+            results = z.json()['results']
+
+            # check API status code and if OK, iterate over the results and update records
+            if z.status_code == 200:
                 try:
-                    user_info.save()
+                    #  get ids of existing records for the credentials since we cannot tell 100% if a new record is an update to an old
+                    old_records = User_info.objects.filter(credentials_id=token['credentials_id'])
+
+                    # delete old records
+                    if old_records.exists():
+                        old_records.delete()
+
+                    for i in range(0,len(results)):
+                        update_time = results[i]['update_timestamp']
+
+                        # if TL does not return the field, set it to None for Django sanity, this can be replaced once we develop a serialiser
+                        for field in User_info.include_fields():
+                            if field not in results[i].keys():
+                                results[i][field]=None
+
+                        # write the new records
+                        try:
+                            # create user details first thusly setting a primary key for related tables
+                            user_info = cls.objects.create(credentials_id = Token.objects.get(credentials_id=token['credentials_id']),
+                                                           full_name = results[i]['full_name'],
+                                                           date_of_birth = results[i]['date_of_birth'],
+                                                           update_timestamp = update_time
+                                                           )
+                            new_record = cls.objects.get(credentials_id = token['credentials_id'], full_name = results[i]['full_name'])
+
+                            # check if address details exist.  If so, attribute and process into the addresses model
+                            # there may be more than 1 address per name so loop through addresses
+                            if 'addresses' in results[i].keys():
+                                addresses = results[i]['addresses']
+
+                                for address in addresses:
+                                    # attribute the address records to None where no data is sent through
+                                    for field in User_addresses.include_fields():
+                                        if field not in address.keys():
+                                                address[field] = ''
+                                    # write the results to the model
+                                    try:
+                                        user_address = User_addresses.objects.create(
+                                            user_info_id = new_record,
+                                            address=address['address'],
+                                            city=address['city'],
+                                            zip=address['zip'],
+                                            country=address['country'],
+                                            )
+                                    except:
+                                        raise Exception('Unknown db error')
+                        except:
+                            raise Exception('Unknown db error')
                 except:
                     raise Exception('Unknown db error')
-                if 'addresses' in results[i].keys():
-                    addresses=results[i]['addresses']
-                    print(addresses)
-                    for field in User_addresses.include_fields():
-                        for j in range(0,len(addresses)):
-                            if field not in addresses[j].keys():
-                                addresses[j][field] = ''
-                    for j in range(0,len(addresses)):
-                        user_address = User_addresses(user_id = user.id,
-                                                      provider_id = Providers.objects.get(provider_id = provider_id),
-                                                      address = addresses[j]['address'],
-                                                      city = addresses[j]['city'],
-                                                      zip = addresses[j]['zip'],
-                                                      country = addresses[j]['country'],
-                                                      update_timestamp = update_time
-                                                      )
-                        try:
-                            pass
-                            #user_address.save()
-                        except:
-                            raise Exception('Unknown db error')
-                if 'phones' in results[i].keys():
-                    phones=results[i]['phones']
-                    print(phones)
-                    for j in range(0,len(phones)):
-                        user_phone = User_phones(user_id = user.id,
-                                                 provider_id = Providers.objects.get(provider_id = provider_id),
-                                                 phones = phones[j],
-                                                 update_timestamp = update_time
-                                                 )
-                        try:
-                            pass
-                            #user_phone.save()
-                        except:
-                            raise Exception('Unknown db error')
-                if 'emails' in results[i].keys():
-                    emails=results[i]['emails']
-                    print(emails)
-                    print()
-                    for j in range(0,len(results[i]['emails'])):
-                        user_email = User_emails(user_id = user.id,
-                                                 provider_id = Providers.objects.get(provider_id = provider_id),
-                                                 emails = emails[j],
-                                                 update_timestamp = update_time
-                                                 )
-                        try:
-                            pass
-                            #user_email.save()
-                        except:
-                            raise Exception('Unknown db error')
-            status={'code':200,'desc':'Success'}
-            return(status)
-        else:
-            status={'code':400,'desc':'True Layer API Failure'}
-            return(status)
 
+"""
+                    if 'addresses' in results[i].keys():
+                        addresses=results[i]['addresses']
+                        print(addresses)
+                        for field in User_addresses.include_fields():
+                            for j in range(0,len(addresses)):
+                                if field not in addresses[j].keys():
+                                    addresses[j][field] = ''
+                        for j in range(0,len(addresses)):
+                            user_address = User_addresses(user_id = user.id,
+                                                          provider_id = Providers.objects.get(provider_id = provider_id),
+                                                          address = addresses[j]['address'],
+                                                          city = addresses[j]['city'],
+                                                          zip = addresses[j]['zip'],
+                                                          country = addresses[j]['country'],
+                                                          update_timestamp = update_time
+                                                          )
+                            try:
+                                pass
+                                #user_address.save()
+                            except:
+                                raise Exception('Unknown db error')
+                    if 'phones' in results[i].keys():
+                        phones=results[i]['phones']
+                        print(phones)
+                        for j in range(0,len(phones)):
+                            user_phone = User_phones(user_id = user.id,
+                                                     provider_id = Providers.objects.get(provider_id = provider_id),
+                                                     phones = phones[j],
+                                                     update_timestamp = update_time
+                                                     )
+                            try:
+                                pass
+                                #user_phone.save()
+                            except:
+                                raise Exception('Unknown db error')
+                    if 'emails' in results[i].keys():
+                        emails=results[i]['emails']
+                        print(emails)
+                        print()
+                        for j in range(0,len(results[i]['emails'])):
+                            user_email = User_emails(user_id = user.id,
+                                                     provider_id = Providers.objects.get(provider_id = provider_id),
+                                                     emails = emails[j],
+                                                     update_timestamp = update_time
+                                                     )
+                            try:
+                                pass
+                                #user_email.save()
+                            except:
+                                raise Exception('Unknown db error')
+                status={'code':200,'desc':'Success'}
+                return(status)
+            else:
+                return({'code':400,'desc':'TrueLayer API Failure. TL error code = %s and message = %s' % (z.status_code, z.json()['error'])})
+"""
 class User_addresses(models.Model):
     # stores user address info provided by banks
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
-    provider_id = models.ForeignKey(Providers, unique=False, on_delete=models.DO_NOTHING)
+    user_info_id = models.ForeignKey(User_info, unique=False, on_delete=models.CASCADE)
     address = models.TextField(default=None)
     city = models.CharField(max_length=150, default=None)
     zip = models.CharField(max_length=50, default=None)
     country = models.CharField(max_length=150, default=None)
-    update_timestamp = models.DateTimeField()
-
-    class Meta:
-        unique_together = (('user', 'provider_id'),)
 
     @property
     def fields(self):
@@ -447,8 +474,8 @@ class User_addresses(models.Model):
 
     @classmethod
     def include_fields(cls):
-        exclude_list = ['user','id','provider_id']
-        field_list = [f.name for f in User_info._meta.fields if f.name not in exclude_list]
+        exclude_list = ['id', 'user_info_id']
+        field_list = [f.name for f in User_addresses._meta.fields if f.name not in exclude_list]
         return field_list
 
 class User_phones(models.Model):
