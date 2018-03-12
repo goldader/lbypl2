@@ -60,6 +60,7 @@ class TL_info(models.Model):
     token_url = models.URLField()
     info_url = models.URLField()
     provider_url = models.URLField()
+    me_url = models.URLField()
 
     def __str__(self):
         return self.app_name
@@ -78,6 +79,7 @@ class TL_info(models.Model):
         l['token_url'] = cls.objects.filter(app_name=app_name)[0].token_url
         l['info_url'] = cls.objects.filter(app_name=app_name)[0].info_url
         l['provider_url'] = cls.objects.filter(app_name=app_name)[0].provider_url
+        l['me_url'] = cls.objects.filter(app_name=app_name)[0].me_url
         return l
 
 class Providers(models.Model):
@@ -140,6 +142,7 @@ class Providers(models.Model):
 class Token(models.Model):
     # establishes a token for a user at a given provider
     # todo refactor 1:1 user to provider relationship. Need to update so users can have multiple tokens for the same provider
+    credentials_id = models.CharField(max_length=100, primary_key=True)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     provider_id = models.ForeignKey(Providers, unique=False, on_delete=models.DO_NOTHING)
     access_token = models.TextField()
@@ -147,6 +150,8 @@ class Token(models.Model):
     r_lasttime = models.DateTimeField()
     expires_in = models.IntegerField()
     token_type = models.CharField(max_length=50)
+    requested_scope = models.TextField(null=True) # based on the user's request to TL
+    validated_scope = models.TextField(null=True) # validate on the token metadata return from TL
 
     def __str__(self):
         return ("UID : %s - Provider : %s" % (self.user,self.provider_id))
@@ -156,42 +161,73 @@ class Token(models.Model):
         verbose_name_plural = "User Tokens"
         unique_together = []
 
-    @classmethod
+    @classmethod # todo add a test to simply see if it works
     def token_exists(cls, username, provider_id):
+        # use to determine if a token exists at all for a given user
         user = User.objects.get(username=username)
-        return cls.objects.filter(user_id=user.id,provider_id=provider_id).exists()
+        return cls.objects.filter(user_id=user.id, provider_id=provider_id).exists()
+
+    @classmethod # todo add a test to simple see if it works
+    def get_credential_ids(cls, username):
+        # returns a list of all token credentials for a given user
+        user = User.objects.get(username=username)
+        return [t['credentials_id'] for t in cls.objects.values('credentials_id').filter(user_id=user.id)]
+
+    @classmethod # todo add a test to simply see if it works
+    def get_refresh_tokens(cls, username):
+        # returns a list of refresh tokens for a given user
+        user = User.objects.get(username=username)
+        return [t['refresh_token'] for t in cls.objects.values('refresh_token').filter(user_id=user.id)]
 
     @classmethod
-    def get_refresh_token(cls, username, provider_id):
-        # refresh token for the given user and provider combination
-        user = User.objects.get(username=username)
-        return cls.objects.filter(user_id=user.id,provider_id=provider_id)[0].refresh_token
+    def get_refresh_token_one(cls,credentials_id): #todo check that it returns the expected single value result
+        # returns a single refresh token given a credential ID
+        return cls.objects.values('refresh_token').get(credentials_id=credentials_id)['refresh_token']
 
-    @classmethod
-    def get_access_token(cls, username, provider_id):
+    @classmethod # todo add a test to simply see if it works
+    def get_access_tokens(cls, username): #todo refactor into two methods, get_single(cls, username, provider_id), get_all(cls, username)
         # check if the token is still valid. If so, return access token. If not, refresh then return.
 
+        # get a list of all tokens and expiry values for the given user
         user = User.objects.get(username=username)
-        # get the expiry value for the current token
-        v = cls.objects.values('r_lasttime', 'expires_in', 'access_token').filter(user_id=user.id, provider_id=provider_id)[0]
+        v = cls.objects.values('credentials_id','r_lasttime', 'expires_in').filter(user_id=user.id)
 
-        r_lasttime = v['r_lasttime']
-        r_sec = v['expires_in'] - 120  # use an expiry somewhat shorter in case processing time expires a token prior to using it
+        # add a for loop to evaluate the token and refresh it if old
+        for i in range(0, len(v)):
+            r_lasttime = v[i]['r_lasttime']
+            r_sec = v[i]['expires_in'] - 120  # use an expiry somewhat shorter in case processing time expires a token prior to using it
 
-        # set expiry value
-        expiry = timedelta(seconds=r_sec) + r_lasttime
+            # set expiry value
+            expiry = timedelta(seconds=r_sec) + r_lasttime
 
-        if timezone.now() < expiry:  # issue the existing code
-            return (v['access_token'])
-        else:  # requests a new token and return it
-            status=Token.update_refresh_token(username,provider_id)
-            if status['code'] == 200:
-                return cls.objects.filter(user_id=user.id, provider_id=provider_id)[0].access_token
-            else:
-                status = {'code': 400, 'desc': 'Token refresh failed.'}
-                return (status)
+            if timezone.now() < expiry:  # leave the code in place
+                pass
+            else:  # requests a new token and return it
+                status=Token.update_refresh_token(v[i]['credentials_id'])
+                if status['code']==400:
+                    return {'code': 400, 'desc': 'Token refresh failed.'}
+        return [t['access_token'] for t in cls.objects.values('access_token').filter(user_id=user.id)]
 
-    @classmethod
+    @classmethod # todo add a test to simply see if it works
+    def get_token_metadata(cls,access_token):
+        # used to get metadata about the token immediately after it has been issued.
+        # can used for metadata validation or update but isn't truly needed for those purposes as other models also gather the same data
+
+        # call truelayer for token metadata
+        access_info = TL_info.url_access()
+        token_phrase = "Bearer %s" % access_token
+        headers = {'Authorization': token_phrase}
+        z = requests.get(access_info['me_url'], headers=headers)
+        results = z.json()['results'][0]
+
+        # check the api response and process or fail out
+        if z.status_code == 200:  # check if API call is a success
+            return({'credentials_id':results['credentials_id'],'validated_scope':results['scopes']})
+        else:
+            status = {'code': 400, 'desc': 'API failure. Test for TrueLayer connectivity to token meta data APIs.'}
+            return(status)
+
+    @classmethod # todo add a test to simply see if it works
     def get_new_token(cls, username, provider_id, access_code):
         # use to acquire a new access token from truelayer and update it in the database
         # requires the front end to have already been provided an authorisation token called access_code
@@ -211,18 +247,23 @@ class Token(models.Model):
 
             # check the api response and process or fail out
             if z.status_code == 200:  # check if API call is a success
-                temp_dict = z.json()
+                at_response = z.json()
                 user = User.objects.get(username=username)
+
+                # call get_token_metadata to get the token's credential and validated scope
+                md_response = Token.get_token_metadata(at_response['access_token'])
 
                 # translate the temp_dict / json into a database write procedure
                 data_update=cls(
                     user_id = user.id,
                     provider_id = Providers.objects.get(provider_id=provider_id),
-                    access_token = temp_dict['access_token'],
-                    refresh_token = temp_dict['refresh_token'],
+                    credentials_id = md_response['credentials_id'],
+                    access_token = at_response['access_token'],
+                    refresh_token = at_response['refresh_token'],
                     r_lasttime = this_update,
-                    expires_in = temp_dict['expires_in'],
-                    token_type = temp_dict['token_type']
+                    expires_in = at_response['expires_in'],
+                    token_type = at_response['token_type'],
+                    validated_scope = md_response['validated_scope']
                 )
                 # save the data
                 data_update.save()
@@ -232,55 +273,49 @@ class Token(models.Model):
                 status = {'code': 400, 'desc': 'API failure. Test for TrueLayer connectivity to token request APIs.'}
                 return (status)
 
-    @classmethod
-    def update_refresh_token(cls,username, provider_id):
+    @classmethod # todo add a test to simply see if it works
+    def update_refresh_token(cls,credentials_id):
         # use to refresh the authorisation token from truelayer and update it in the database
 
-        # determine if the user / provider combination already exist
-        if Token.token_exists(username, provider_id) == False:
-            status = {'code': 400, 'desc': 'User/provider combination does not exist.'}
-            return (status)
+        # get the last known refresh token for this credential
+        refresh_token = Token.get_refresh_token_one(credentials_id)
 
-        else:
-             # get the last known refresh token for the user / provider combination
-            refresh_token = Token.get_refresh_token(username, provider_id)
+        # get and configure the url info
+        tl_info=TL_info.url_access()
+        payload = {'grant_type': 'refresh_token', 'client_id': tl_info['client_id'], \
+                   'client_secret': tl_info['client_secret'], 'refresh_token': refresh_token}
+        this_update = timezone.now()
+        z = requests.post(tl_info['token_url'], data=payload)  # call truelayer to get the token and set the call time
 
-            # get and configure the url info
-            tl_info=TL_info.url_access()
-            payload = {'grant_type': 'refresh_token', 'client_id': tl_info['client_id'], \
-                       'client_secret': tl_info['client_secret'], 'refresh_token': refresh_token}
-            this_update = timezone.now()
-            z = requests.post(tl_info['token_url'], data=payload)  # call truelayer to get the token and set the call time
+        # check the api response and process or fail out
+        if z.status_code == 200:  # check if API call is a success
+            temp_dict = z.json()
 
-            # check the api response and process or fail out
-            if z.status_code == 200:  # check if API call is a success
-                temp_dict = z.json()
-                user = User.objects.get(username=username)
+            # translate the temp_dict / json into a database write procedure
+            data_update=cls(
+                credentials_id=credentials_id,
+                access_token = temp_dict['access_token'],
+                refresh_token = temp_dict['refresh_token'],
+                r_lasttime = this_update,
+                expires_in = temp_dict['expires_in'],
+                token_type = temp_dict['token_type']
+            )
 
-                # translate the temp_dict / json into a database write procedure
-                data_update=cls(
-                    id=Token.objects.get(user_id=user.id, provider_id=provider_id).id,
-                    user_id = user.id,
-                    provider_id = Providers.objects.get(provider_id=provider_id),
-                    access_token = temp_dict['access_token'],
-                    refresh_token = temp_dict['refresh_token'],
-                    r_lasttime = this_update,
-                    expires_in = temp_dict['expires_in'],
-                    token_type = temp_dict['token_type']
-                )
-                # save the data
-                try:
-                    data_update.save()
-                    status = {'code': 200, 'desc': 'Success'}
-                    return (status)
-                except:
-                    raise Exception('Unknown db error')
-            else:
-                status = {'code': 400, 'desc': 'API failure. Test for TrueLayer connectivity to token request APIs.'}
+            # save the data
+            try:
+                data_update.save(update_fields=['access_token', 'refresh_token', 'r_lasttime', 'expires_in', 'token_type'])
+                status = {'code': 200, 'desc': 'Success'}
                 return (status)
+            except:
+                raise Exception('Unknown db error')
+        else:
+            status = {'code': 400, 'desc': 'Truelayer API failure. Potentially an invalid refresh token. TL error code = %s and message = %s' % (z.status_code, z.json()['error'])}
+            return (status) #todo, if the TL error is an invalid grant register requirement to re-register the user as the token is out of synch
 
 class User_info(models.Model):
     # gathers user information from TrueLayer as provided by the bank
+    # todo update the model to include token_id as a Foreign_Key
+    credentials_id = models.ForeignKey(Token, unique=True, on_delete=models.DO_NOTHING)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     provider_id = models.ForeignKey(Providers, unique=False, on_delete=models.DO_NOTHING)
     full_name = models.TextField()
@@ -290,7 +325,7 @@ class User_info(models.Model):
     class Meta:
         verbose_name = "User Information - Bank Provided"
         verbose_name_plural = "User Information - Bank Provided"
-        unique_together = (('user','provider_id','full_name'),)
+        unique_together = (('credentials_id','full_name'),) # todo change to token_id and full_name
 
     @property
     def fields(self):
@@ -307,7 +342,8 @@ class User_info(models.Model):
 
         # identify the user and get an access token
         user = User.objects.get(username=username)
-        token = Token.get_access_token(username, provider_id)
+        token = Token.get_access_tokens(username, provider_id)
+        # todo, update the get_access method to return both the access token and the id
 
         # call truelayer for user info updates
         access_info = TL_info.url_access()
@@ -326,7 +362,7 @@ class User_info(models.Model):
                     if field not in results[i].keys():
                         results[i][field]=None
                 print(results[i])
-                user_info = cls(user_id = user.id,
+                user_info = cls(user_id = user.id, # todo, update the method to write token_id, remove user and provider
                                 provider_id = Providers.objects.get(provider_id=provider_id),
                                 full_name = results[i]['full_name'],
                                 date_of_birth = results[i]['date_of_birth'],
