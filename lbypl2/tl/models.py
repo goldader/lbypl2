@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from django.conf import settings
 from django.core import serializers
 import simplejson
+from django.core.exceptions import ObjectDoesNotExist
 
 # Create your models here.
 
@@ -143,7 +144,7 @@ class Providers(models.Model):
 
 class Token(models.Model):
     # establishes a token for a user at a given provider
-    credentials_id = models.CharField(max_length=100, primary_key=True)
+    credentials_id = models.CharField(max_length=128, primary_key=True)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     provider_id = models.ForeignKey(Providers, unique=False, on_delete=models.DO_NOTHING)
     access_token = models.TextField()
@@ -186,7 +187,7 @@ class Token(models.Model):
         return cls.objects.values('refresh_token').get(credentials_id=credentials_id)['refresh_token']
 
     @classmethod # todo add a test to simply see if it works
-    def get_access_tokens(cls, username): #todo refactor into two methods, get_single(cls, username, provider_id), get_all(cls, username)
+    def get_access_tokens(cls, username):
         # check if the token is still valid. If so, return access token. If not, refresh then return.
 
         # get a list of all tokens and expiry values for the given user
@@ -204,7 +205,7 @@ class Token(models.Model):
             if timezone.now() < expiry:  # leave the code in place
                 pass
             else:  # requests a new token and return it
-                status=Token.update_refresh_token(v[i]['credentials_id'])
+                status = Token.update_refresh_token(v[i]['credentials_id'])
                 if status['code']==400:
                     return {'code': 400, 'desc': 'Token refresh failed.'}
         return (cls.objects.values('credentials_id', 'access_token').filter(user_id=user.id))
@@ -212,6 +213,20 @@ class Token(models.Model):
     @classmethod
     def get_access_token_one(cls,credentials_id):
         # returns a single access token given a credential ID
+
+        v = cls.objects.values('r_lasttime', 'expires_in').filter(credentials_id = credentials_id)
+        r_lasttime = v[0]['r_lasttime']
+        r_sec = v[0]['expires_in'] - 120 # user an expiry somewhat shorter in case processing time expires a token in flight
+
+        # set expiry value
+        expiry = timedelta(seconds=r_sec) + r_lasttime
+
+        if timezone.now() < expiry:
+            pass
+        else:
+            status = Token.update_refresh_token(credentials_id)
+            if status['code'] == 400:
+                return {'code': 400, 'desc': 'Token refresh failed.'}
         return cls.objects.values('access_token').get(credentials_id = credentials_id)['access_token']
 
     @classmethod # todo add a test to simply see if it works
@@ -613,7 +628,7 @@ class Account_balance(models.Model):
     @classmethod
     def get_account_balances_update(cls, username):
 
-        # get the correct url string for info updates
+        # get the correct url string for updates
         access_info = TL_info.url_access()
 
         # get all accounts and credentials for a given user
@@ -652,3 +667,97 @@ class Account_balance(models.Model):
                           z.status_code, z.json()['error'])
                          })
         return({'code': 200,'desc':'Success'})
+
+class Account_trans(models.Model):
+    account_id = models.ForeignKey(Account, on_delete=models.CASCADE)
+    transaction_id = models.CharField(max_length=128,primary_key=True)
+    timestamp = models.DateTimeField()
+    description = models.TextField(null=True)
+    transaction_type = models.CharField(max_length=50)
+    transaction_category = models.CharField(max_length=50)
+    amount = models.DecimalField(max_digits=13,decimal_places=2)
+    currency = models.CharField(max_length=3)
+    meta_provider_transaction_category = models.CharField(max_length=100, null=True)
+    meta_bank_transaction_id = models.CharField(max_length=128, null=True)
+    meta_transaction_reference = models.TextField(null=True)
+
+    class Meta:
+        verbose_name = "Account Transactions"
+        verbose_name_plural = "Account Transactions"
+        get_latest_by = "timestamp"
+
+    @classmethod
+    def include_fields(cls):
+        exclude_list = ['account_id','transaction_id']
+        return [f.name for f in Account_trans._meta.fields if f.name not in exclude_list]
+
+    @classmethod
+    def get_account_trans(cls,username):
+
+        # get the correct url string for info updates
+        access_info = TL_info.url_access()
+
+        # get all accounts and credentials for a given user
+        account_list = Account.get_accounts(username)
+
+        # iterate over the tokens to get all information
+        for i in range(0, len(account_list)):
+            # establish the correct url string for each account
+            access_token = Token.get_access_token_one(account_list[i]['credentials_id'])
+            token_phrase = "Bearer %s" % access_token
+            headers = {'Authorization': token_phrase}
+
+            try: # trap for null recordsets
+                latest = Account_trans.objects.values_list('timestamp').filter(account_id = account_list[i]['account_id']).latest('timestamp')
+                f_date = latest[0].strftime("%Y-%m-%d")
+            except ObjectDoesNotExist:
+                f_date = (timezone.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+
+            t_date = timezone.now().strftime("%Y-%m-%d")
+
+            url = "%s/%s/transactions?from=%s&to=%s" % (access_info['account_url'], account_list[i]['account_id'],f_date,t_date)
+            z = requests.get(url, headers=headers)
+
+            if z.status_code == 200:
+                results = z.json()['results']
+
+                # check for fields that are not provided so Django is happy (prefer NoSQL approach)
+                include_fields = Account_trans.include_fields()
+
+                # set the accoutn in advance so it is not called during looping
+                account=Account.objects.get(account_id = account_list[i]['account_id']) #todo check other places to pull ID setting out of the loop and update where appropriate
+
+                # flatten the json and attribute it for the parent categories like meta
+                for i in range(0,len(results)):
+                    new_results = json_output(results[i])
+
+                    # check the include fields (keeping Django happy again)
+                    for field in include_fields: # Todo refactor to a comprehension for speed
+                        if field not in new_results.keys():
+                            new_results[field] = None
+
+                    # write the data out (no bulk adds in Django ... thank you django, let's add 1 by 1)
+                    try:
+                        pass
+                        account_trans = cls(
+                            account_id=account,
+                            transaction_id = new_results['transaction_id'],
+                            timestamp = new_results['timestamp'],
+                            description = new_results['description'],
+                            transaction_type = new_results['transaction_type'],
+                            transaction_category = new_results['transaction_category'],
+                            amount = new_results['amount'],
+                            currency = new_results['currency'],
+                            meta_provider_transaction_category = new_results['meta_provider_transaction_category'],
+                            meta_bank_transaction_id = new_results['meta_bank_transaction_id'],
+                            meta_transaction_reference = new_results['meta_transaction_reference']
+                        )
+                        account_trans.save()
+                    except:
+                        raise Exception('Unknown db error')
+            else:
+                return ({'code': 400,
+                         'desc': 'Truelayer Account Balance API failure. TL error code = %s and message = %s' % (
+                             z.status_code, z.json()['error'])
+                         })
+        return ({'code': 200, 'desc': 'Success'})
