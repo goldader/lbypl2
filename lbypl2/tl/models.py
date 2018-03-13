@@ -677,9 +677,10 @@ class Account_trans(models.Model):
     transaction_category = models.CharField(max_length=50)
     amount = models.DecimalField(max_digits=13,decimal_places=2)
     currency = models.CharField(max_length=3)
-    meta_provider_transaction_category = models.CharField(max_length=100, null=True)
-    meta_bank_transaction_id = models.CharField(max_length=128, null=True)
-    meta_transaction_reference = models.TextField(null=True)
+    meta = models.TextField(null=True)
+    #meta_provider_transaction_category = models.CharField(max_length=100, null=True)
+    #meta_bank_transaction_id = models.CharField(max_length=128, null=True)
+    #meta_transaction_reference = models.TextField(null=True)
 
     class Meta:
         verbose_name = "Account Transactions"
@@ -727,9 +728,8 @@ class Account_trans(models.Model):
                 # set the accoutn in advance so it is not called during looping
                 account=Account.objects.get(account_id = account_list[i]['account_id']) #todo check other places to pull ID setting out of the loop and update where appropriate
 
-                # flatten the json and attribute it for the parent categories like meta
                 for i in range(0,len(results)):
-                    new_results = json_output(results[i])
+                    new_results = results[i]
 
                     # check the include fields (keeping Django happy again)
                     for field in include_fields: # Todo refactor to a comprehension for speed
@@ -738,7 +738,6 @@ class Account_trans(models.Model):
 
                     # write the data out (no bulk adds in Django ... thank you django, let's add 1 by 1)
                     try:
-                        pass
                         account_trans = cls(
                             account_id=account,
                             transaction_id = new_results['transaction_id'],
@@ -748,9 +747,10 @@ class Account_trans(models.Model):
                             transaction_category = new_results['transaction_category'],
                             amount = new_results['amount'],
                             currency = new_results['currency'],
-                            meta_provider_transaction_category = new_results['meta_provider_transaction_category'],
-                            meta_bank_transaction_id = new_results['meta_bank_transaction_id'],
-                            meta_transaction_reference = new_results['meta_transaction_reference']
+                            meta = new_results['meta'],
+                            #meta_provider_transaction_category = results['meta_provider_transaction_category'],
+                            #meta_bank_transaction_id = results['meta_bank_transaction_id'],
+                            #meta_transaction_reference = results['meta_transaction_reference']
                         )
                         account_trans.save()
                     except:
@@ -761,3 +761,4 @@ class Account_trans(models.Model):
                              z.status_code, z.json()['error'])
                          })
         return ({'code': 200, 'desc': 'Success'})
+
