@@ -1,7 +1,8 @@
 from django.contrib import admin
 from .models import Providers, TL_info, Token, \
     User_info, Tl_model_updates, User_addresses, \
-    User_emails, User_phones, Account
+    User_emails, User_phones, Account, \
+    Account_balance
 
 class EmailInLine(admin.TabularInline):
     model = User_emails
@@ -35,3 +36,4 @@ admin.site.register(Token)
 admin.site.register(User_info, Tl_user_admin)
 admin.site.register(Tl_model_updates)
 admin.site.register(Account)
+admin.site.register(Account_balance)

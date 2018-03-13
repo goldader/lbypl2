@@ -182,6 +182,7 @@ class Token(models.Model):
     @classmethod
     def get_refresh_token_one(cls,credentials_id): #todo check that it returns the expected single value result
         # returns a single refresh token given a credential ID
+        # Todo add a safe trap for DoesNotExist. Add this trap to other, similar methods
         return cls.objects.values('refresh_token').get(credentials_id=credentials_id)['refresh_token']
 
     @classmethod # todo add a test to simply see if it works
@@ -207,6 +208,11 @@ class Token(models.Model):
                 if status['code']==400:
                     return {'code': 400, 'desc': 'Token refresh failed.'}
         return (cls.objects.values('credentials_id', 'access_token').filter(user_id=user.id))
+
+    @classmethod
+    def get_access_token_one(cls,credentials_id):
+        # returns a single access token given a credential ID
+        return cls.objects.values('access_token').get(credentials_id = credentials_id)['access_token']
 
     @classmethod # todo add a test to simply see if it works
     def get_token_metadata(cls,access_token):
@@ -524,7 +530,11 @@ class Account(models.Model):
         return [f.name for f in Account._meta.fields if f.name not in exclude_list]
 
     @classmethod
-    def get_account_update(cls, username):
+    def get_accounts(cls,username):
+        return Account.objects.values("credentials_id", "account_id").filter(credentials_id__in=Token.get_credential_ids(username))
+
+    @classmethod
+    def get_accounts_update(cls, username):
 
         # get the correct url string for info updates
         access_info = TL_info.url_access()
@@ -536,6 +546,7 @@ class Account(models.Model):
         for token in token_list:
             token_phrase = "Bearer %s" % token['access_token']
             headers = {'Authorization': token_phrase}
+            print(headers)
             z = requests.get(access_info['account_url'], headers=headers)
             results = z.json()['results']
 
@@ -575,3 +586,69 @@ class Account(models.Model):
                          })
         return({'code': 200,'desc':'Success'})
 
+class Account_balance(models.Model):
+    account_id = models.ForeignKey(Account, on_delete=models.CASCADE)
+    available = models.DecimalField(max_digits=13,decimal_places=2)
+    currency = models.CharField(max_length=3)
+    current = models.DecimalField(max_digits=13,decimal_places=2)
+    update_timestamp = models.DateTimeField()
+
+    class Meta:
+        verbose_name = "Latest Balance"
+        verbose_name_plural = "Latest Balance"
+
+    @classmethod
+    def include_fields(cls):
+        exclude_list = ['id', 'account_id']
+        return [f.name for f in Account_balance._meta.fields if f.name not in exclude_list]
+
+    @classmethod
+    def latest_available_balance(cls,account_id):
+        return Account_balance.objects.values("available").filter(account_id = account_id).latest('update_timestamp')
+
+    @classmethod
+    def latest_current_balance(cls,account_id):
+        return Account_balance.objects.values("current").filter(account_id = account_id).latest('update_timestamp')
+
+    @classmethod
+    def get_account_balances_update(cls, username):
+
+        # get the correct url string for info updates
+        access_info = TL_info.url_access()
+
+        # get all accounts and credentials for a given user
+        account_list = Account.get_accounts(username)
+
+        # iterate over the tokens to get all information
+        for i in range(0,len(account_list)):
+            access_token = Token.get_access_token_one(account_list[i]['credentials_id'])
+            token_phrase = "Bearer %s" % access_token
+            headers = {'Authorization': token_phrase}
+            url = "%s/%s/balance" % (access_info['account_url'],account_list[i]['account_id'])
+            z = requests.get(url, headers=headers)
+
+            # check API status code and if OK, iterate over the results and update records
+            if z.status_code == 200:
+                results = z.json()['results']
+                try:
+                    # if TL does not return the field, set it to None for Django sanity, this can be replaced once we develop a serialiser
+                    for field in Account_balance.include_fields():
+                        if field not in results[0].keys():
+                            results[0][field]=None
+                    # write the new records
+                    account_balance = cls(
+                        account_id = Account.objects.get(account_id = account_list[i]['account_id']),
+                        available = results[0]['available'],
+                        currency = results[0]['currency'],
+                        current = results[0]['current'],
+                        update_timestamp = results[0]['update_timestamp']
+                        )
+                    account_balance.save()
+                except:
+                    raise Exception('Unknown db error')
+            else:
+                return ({'code': 400,
+                          'desc': 'Truelayer Account Balance API failure. TL error code = %s and message = %s' % (
+                          z.status_code, z.json()['error'])
+                         })
+        return({'code': 200,'desc':'Success'})
