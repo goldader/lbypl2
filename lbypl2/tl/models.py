@@ -761,7 +761,7 @@ class Account_trans(models.Model):
                         raise Exception('Unknown db error')
             else:
                 return ({'code': 400,
-                         'desc': 'Truelayer Account Balance API failure. TL error code = %s and message = %s' % (
+                         'desc': 'Truelayer Account Transaction API failure. TL error code = %s and message = %s' % (
                              z.status_code, z.json()['error'])
                          })
         return ({'code': 200, 'desc': 'Success'})
@@ -961,7 +961,7 @@ class Card_account_trans(models.Model):
     @classmethod
     def include_fields(cls):
         exclude_list = ['card_account_id','transaction_id']
-        return [f.name for f in Account_trans._meta.fields if f.name not in exclude_list]
+        return [f.name for f in Card_account_trans._meta.fields if f.name not in exclude_list]
 
     @classmethod
     def get_card_account_trans(cls,username):
@@ -970,7 +970,7 @@ class Card_account_trans(models.Model):
         access_info = TL_info.url_access()
 
         # get all accounts and credentials for a given user
-        account_list = Account.get_accounts(username)
+        account_list = Cards.get_card_accounts(username)
 
         # iterate over the tokens to get all information
         for i in range(0, len(account_list)):
@@ -980,24 +980,24 @@ class Card_account_trans(models.Model):
             headers = {'Authorization': token_phrase}
 
             try: # trap for null recordsets
-                latest = Account_trans.objects.values_list('timestamp').filter(account_id = account_list[i]['account_id']).latest('timestamp')
+                latest = Card_account_trans.objects.values_list('timestamp').filter(card_account_id = account_list[i]['card_account_id']).latest('timestamp')
                 f_date = latest[0].strftime("%Y-%m-%d")
             except ObjectDoesNotExist:
                 f_date = (timezone.now() - timedelta(days=365)).strftime("%Y-%m-%d")
 
             t_date = timezone.now().strftime("%Y-%m-%d")
 
-            url = "%s/%s/transactions?from=%s&to=%s" % (access_info['account_url'], account_list[i]['account_id'],f_date,t_date)
+            url = "%s/%s/transactions?from=%s&to=%s" % (access_info['card_url'], account_list[i]['card_account_id'],f_date,t_date)
             z = requests.get(url, headers=headers)
 
             if z.status_code == 200:
                 results = z.json()['results']
 
                 # check for fields that are not provided so Django is happy (prefer NoSQL approach)
-                include_fields = Account_trans.include_fields()
+                include_fields = Card_account_trans.include_fields()
 
                 # set the accoutn in advance so it is not called during looping
-                account=Account.objects.get(account_id = account_list[i]['account_id']) #todo check other places to pull ID setting out of the loop and update where appropriate
+                account=Cards.objects.get(card_account_id = account_list[i]['card_account_id'])
 
                 for i in range(0,len(results)):
                     new_results = results[i]
@@ -1010,7 +1010,7 @@ class Card_account_trans(models.Model):
                     # write the data out (no bulk adds in Django ... thank you django, let's add 1 by 1)
                     try:
                         account_trans = cls(
-                            account_id=account,
+                            card_account_id=account,
                             transaction_id = new_results['transaction_id'],
                             timestamp = new_results['timestamp'],
                             description = new_results['description'],
@@ -1025,7 +1025,7 @@ class Card_account_trans(models.Model):
                         raise Exception('Unknown db error')
             else:
                 return ({'code': 400,
-                         'desc': 'Truelayer Account Balance API failure. TL error code = %s and message = %s' % (
+                         'desc': 'Truelayer Card Transaction API failure. TL error code = %s and message = %s' % (
                              z.status_code, z.json()['error'])
                          })
         return ({'code': 200, 'desc': 'Success'})
