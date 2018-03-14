@@ -10,6 +10,7 @@ import simplejson
 from django.core.exceptions import ObjectDoesNotExist
 
 # Create your models here.
+# Todo update all classes to check permissions before progressing. Add this logic into the methods to onboard users or update records
 
 def json_dict_generator(indict, pre=None):
     # recurses a json file to flatten it out
@@ -63,6 +64,7 @@ class TL_info(models.Model):
     provider_url = models.URLField()
     me_url = models.URLField()
     account_url = models.URLField()
+    card_url = models.URLField()
 
     def __str__(self):
         return self.app_name
@@ -83,6 +85,7 @@ class TL_info(models.Model):
         l['provider_url'] = cls.objects.filter(app_name=app_name)[0].provider_url
         l['me_url'] = cls.objects.filter(app_name=app_name)[0].me_url
         l['account_url'] = cls.objects.filter(app_name=app_name)[0].account_url
+        l['card_url'] = cls.objects.filter(app_name=app_name)[0].card_url
         return l
 
 class Providers(models.Model):
@@ -561,7 +564,6 @@ class Account(models.Model):
         for token in token_list:
             token_phrase = "Bearer %s" % token['access_token']
             headers = {'Authorization': token_phrase}
-            print(headers)
             z = requests.get(access_info['account_url'], headers=headers)
             results = z.json()['results']
 
@@ -619,11 +621,19 @@ class Account_balance(models.Model):
 
     @classmethod
     def latest_available_balance(cls,account_id):
-        return Account_balance.objects.values("available").filter(account_id = account_id).latest('update_timestamp')
+        try:
+            balance = Account_balance.objects.values("available").filter(account_id = account_id).latest('update_timestamp')
+        except ObjectDoesNotExist:
+            return ({'code': 201,'desc': 'Card account does not exist'})
+        return balance
 
     @classmethod
     def latest_current_balance(cls,account_id):
-        return Account_balance.objects.values("current").filter(account_id = account_id).latest('update_timestamp')
+        try:
+            balance = Account_balance.objects.values("current").filter(account_id = account_id).latest('update_timestamp')
+        except ObjectDoesNotExist:
+            return ({'code': 201,'desc': 'Card account does not exist'})
+        return balance
 
     @classmethod
     def get_account_balances_update(cls, username):
@@ -678,9 +688,6 @@ class Account_trans(models.Model):
     amount = models.DecimalField(max_digits=13,decimal_places=2)
     currency = models.CharField(max_length=3)
     meta = models.TextField(null=True)
-    #meta_provider_transaction_category = models.CharField(max_length=100, null=True)
-    #meta_bank_transaction_id = models.CharField(max_length=128, null=True)
-    #meta_transaction_reference = models.TextField(null=True)
 
     class Meta:
         verbose_name = "Account Transactions"
@@ -748,10 +755,7 @@ class Account_trans(models.Model):
                             amount = new_results['amount'],
                             currency = new_results['currency'],
                             meta = new_results['meta'],
-                            #meta_provider_transaction_category = results['meta_provider_transaction_category'],
-                            #meta_bank_transaction_id = results['meta_bank_transaction_id'],
-                            #meta_transaction_reference = results['meta_transaction_reference']
-                        )
+                           )
                         account_trans.save()
                     except:
                         raise Exception('Unknown db error')
@@ -762,3 +766,266 @@ class Account_trans(models.Model):
                          })
         return ({'code': 200, 'desc': 'Success'})
 
+class Cards(models.Model):
+    # list account details for a given token.  multiple accounts may exist per token
+    credentials_id = models.ForeignKey(Token, on_delete=models.DO_NOTHING)
+    card_account_id = models.CharField(max_length=100, primary_key=True)
+    card_network = models.CharField(max_length=50)
+    card_type = models.CharField(max_length=50)
+    currency = models.CharField(max_length=3)
+    display_name = models.CharField(max_length=150, null=True)
+    partial_card_number = models.CharField(max_length=4)
+    name_on_card = models.CharField(max_length=150,null=True)
+    valid_from = models.DateTimeField(null=True)
+    valid_to = models.DateTimeField(null=True)
+    update_timestamp = models.DateTimeField()
+    provider_meta = models.TextField(null=True)
+
+    def __str__(self):
+        return ("%s : %s (%s)" % (self.card_network, self.card_type, self.partial_card_number))
+
+    class Meta:
+        verbose_name = "Card Account"
+        verbose_name_plural = "Card Accounts"
+
+    @classmethod
+    def include_fields(cls):
+        exclude_list = ['credentials_id', 'id', 'card_account_id', 'provider_meta']
+        return [f.name for f in Cards._meta.fields if f.name not in exclude_list]
+
+    @classmethod
+    def get_card_accounts(cls,username):
+        return Cards.objects.values("credentials_id", "card_account_id").filter(credentials_id__in=Token.get_credential_ids(username))
+
+    @classmethod
+    def get_card_accounts_update(cls, username):
+
+        # get the correct url string for info updates
+        access_info = TL_info.url_access()
+
+        # get all access tokens for a given user
+        token_list = Token.get_access_tokens(username)
+
+        # iterate over the tokens to get all information
+        for token in token_list:
+            token_phrase = "Bearer %s" % token['access_token']
+            headers = {'Authorization': token_phrase}
+            z = requests.get(access_info['card_url'], headers=headers)
+            results = z.json()['results']
+
+            # check API status code and if OK, iterate over the results and update records
+            if z.status_code == 200: #Todo add a test and a trap for a provider_id that does not exist in the Providers table. If this happens, run provider update
+                try:
+                    for i in range(0,len(results)):
+                        # flatten the embedded records
+                        new_results = results[i]
+
+                        # if TL does not return the field, set it to None for Django sanity, this can be replaced once we develop a serialiser
+                        for field in Cards.include_fields():
+                            if field not in new_results.keys():
+                                new_results[field]=None
+
+                        # write the new records
+                        card_info = cls(
+                            credentials_id = Token.objects.get(credentials_id=token['credentials_id']),
+                            card_account_id = new_results['account_id'],
+                            card_network = new_results['card_network'],
+                            card_type = new_results['card_type'],
+                            currency = new_results['currency'],
+                            display_name = new_results['display_name'],
+                            partial_card_number = new_results['partial_card_number'],
+                            name_on_card = new_results['name_on_card'],
+                            valid_from = new_results['valid_from'],
+                            valid_to = new_results['valid_to'],
+                            update_timestamp = new_results['update_timestamp'],
+                            provider_meta = new_results['provider']
+                        )
+                        card_info.save()
+
+                except:
+                    raise Exception('Unknown db error')
+            else:
+                return ({'code': 400,
+                          'desc': 'Truelayer Card Account API failure. TL error code = %s and message = %s' % (
+                          z.status_code, z.json()['error'])
+                         })
+        return({'code': 200,'desc':'Success'})
+
+class Card_account_balance(models.Model):
+    card_account_id = models.ForeignKey(Cards, on_delete=models.CASCADE)
+    available = models.DecimalField(max_digits=13, decimal_places=2, null=True)
+    currency = models.CharField(max_length=3)
+    current = models.DecimalField(max_digits=13, decimal_places=2, null=True)
+    credit_limit = models.DecimalField(max_digits=13, decimal_places=2, null=True)
+    last_statement_balance = models.DecimalField(max_digits=13, decimal_places=2, null=True)
+    last_statement_date = models.DateTimeField(null=True)
+    payment_due = models.DecimalField(max_digits=13, decimal_places=2, null=True)
+    payment_due_date = models.DateTimeField(null=True)
+    update_timestamp = models.DateTimeField()
+
+    def __str__(self):
+        return ("%s : available balance %s" % (self.card_account_id, self.current))
+
+    class Meta:
+        verbose_name = "Latest Card Balance"
+        verbose_name_plural = "Latest Card Balance"
+
+    @classmethod
+    def include_fields(cls):
+        exclude_list = ['id','card_account_id']
+        return [f.name for f in Card_account_balance._meta.fields if f.name not in exclude_list]
+
+    @classmethod
+    def latest_available_balance(cls, card_account_id):
+        try:
+            balance = Card_account_balance.objects.values("available").filter(card_account_id=card_account_id).latest('update_timestamp')
+        except ObjectDoesNotExist:
+            return ({'code': 201,'desc': 'Card account does not exist'})
+        return balance
+
+    @classmethod
+    def latest_current_balance(cls, card_account_id):
+        try:
+            balance = Card_account_balance.objects.values("current").filter(card_account_id=card_account_id).latest('update_timestamp')
+        except ObjectDoesNotExist:
+            return ({'code': 201, 'desc': 'Card account does not exist'})
+        return balance
+
+    @classmethod
+    def get_card_account_balances_update(cls, username):
+
+        # get the correct url string for updates
+        access_info = TL_info.url_access()
+
+        # get all accounts and credentials for a given user
+        account_list = Cards.get_card_accounts(username)
+
+        # iterate over the tokens to get all information
+        for i in range(0, len(account_list)):
+            access_token = Token.get_access_token_one(account_list[i]['credentials_id'])
+            token_phrase = "Bearer %s" % access_token
+            headers = {'Authorization': token_phrase}
+            url = "%s/%s/balance" % (access_info['card_url'], account_list[i]['card_account_id'])
+            z = requests.get(url, headers=headers)
+
+            # check API status code and if OK, iterate over the results and update records
+            if z.status_code == 200:
+                results = z.json()['results']
+                new_results = results[0]
+                try:
+                    # if TL does not return the field, set it to None for Django sanity, this can be replaced once we develop a serialiser
+                    for field in Account_balance.include_fields():
+                        if field not in new_results.keys():
+                            new_results[field] = None
+
+                    # write the new records
+                    card_balance = cls(
+                        card_account_id = Cards.objects.get(card_account_id = account_list[i]['card_account_id']),
+                        available = new_results['available'],
+                        currency = new_results['currency'],
+                        current = new_results['current'],
+                        credit_limit = new_results['credit_limit'],
+                        last_statement_balance = new_results['last_statement_balance'],
+                        last_statement_date = new_results['last_statement_date'],
+                        payment_due = new_results['payment_due'],
+                        payment_due_date = new_results['payment_due_date'],
+                        update_timestamp = new_results['update_timestamp']
+                    )
+                    card_balance.save()
+
+                except:
+                    raise Exception('Unknown db error')
+            else:
+                return ({'code': 400,
+                         'desc': 'Truelayer Card Balance API failure. TL error code = %s and message = %s' % (
+                             z.status_code, z.json()['error'])
+                         })
+        return ({'code': 200, 'desc': 'Success'})
+
+class Card_account_trans(models.Model):
+    card_account_id = models.ForeignKey(Cards, on_delete=models.CASCADE)
+    transaction_id = models.CharField(max_length=128,primary_key=True)
+    timestamp = models.DateTimeField()
+    description = models.TextField(null=True)
+    transaction_type = models.CharField(max_length=50)
+    transaction_category = models.CharField(max_length=50)
+    amount = models.DecimalField(max_digits=13,decimal_places=2)
+    currency = models.CharField(max_length=3)
+    meta = models.TextField(null=True)
+
+    class Meta:
+        verbose_name = "Card Account Transactions"
+        verbose_name_plural = "Card Account Transactions"
+        get_latest_by = "timestamp"
+
+    @classmethod
+    def include_fields(cls):
+        exclude_list = ['card_account_id','transaction_id']
+        return [f.name for f in Account_trans._meta.fields if f.name not in exclude_list]
+
+    @classmethod
+    def get_card_account_trans(cls,username):
+
+        # get the correct url string for info updates
+        access_info = TL_info.url_access()
+
+        # get all accounts and credentials for a given user
+        account_list = Account.get_accounts(username)
+
+        # iterate over the tokens to get all information
+        for i in range(0, len(account_list)):
+            # establish the correct url string for each account
+            access_token = Token.get_access_token_one(account_list[i]['credentials_id'])
+            token_phrase = "Bearer %s" % access_token
+            headers = {'Authorization': token_phrase}
+
+            try: # trap for null recordsets
+                latest = Account_trans.objects.values_list('timestamp').filter(account_id = account_list[i]['account_id']).latest('timestamp')
+                f_date = latest[0].strftime("%Y-%m-%d")
+            except ObjectDoesNotExist:
+                f_date = (timezone.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+
+            t_date = timezone.now().strftime("%Y-%m-%d")
+
+            url = "%s/%s/transactions?from=%s&to=%s" % (access_info['account_url'], account_list[i]['account_id'],f_date,t_date)
+            z = requests.get(url, headers=headers)
+
+            if z.status_code == 200:
+                results = z.json()['results']
+
+                # check for fields that are not provided so Django is happy (prefer NoSQL approach)
+                include_fields = Account_trans.include_fields()
+
+                # set the accoutn in advance so it is not called during looping
+                account=Account.objects.get(account_id = account_list[i]['account_id']) #todo check other places to pull ID setting out of the loop and update where appropriate
+
+                for i in range(0,len(results)):
+                    new_results = results[i]
+
+                    # check the include fields (keeping Django happy again)
+                    for field in include_fields: # Todo refactor to a comprehension for speed
+                        if field not in new_results.keys():
+                            new_results[field] = None
+
+                    # write the data out (no bulk adds in Django ... thank you django, let's add 1 by 1)
+                    try:
+                        account_trans = cls(
+                            account_id=account,
+                            transaction_id = new_results['transaction_id'],
+                            timestamp = new_results['timestamp'],
+                            description = new_results['description'],
+                            transaction_type = new_results['transaction_type'],
+                            transaction_category = new_results['transaction_category'],
+                            amount = new_results['amount'],
+                            currency = new_results['currency'],
+                            meta = new_results['meta'],
+                           )
+                        account_trans.save()
+                    except:
+                        raise Exception('Unknown db error')
+            else:
+                return ({'code': 400,
+                         'desc': 'Truelayer Account Balance API failure. TL error code = %s and message = %s' % (
+                             z.status_code, z.json()['error'])
+                         })
+        return ({'code': 200, 'desc': 'Success'})
