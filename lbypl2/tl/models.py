@@ -11,6 +11,10 @@ from django.core.exceptions import ObjectDoesNotExist
 
 # Create your models here.
 # Todo update all classes to check permissions before progressing. Add this logic into the methods to onboard users or update records
+# Todo build the onboard users class
+# Todo test that a credential delete does not cascade
+# Build a class called on a User Delete that will obfuscate the important user data - mostly in User_info but also card names and other things like display names
+
 
 def json_dict_generator(indict, pre=None):
     # recurses a json file to flatten it out
