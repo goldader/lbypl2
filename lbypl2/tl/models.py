@@ -12,8 +12,7 @@ from django.core.exceptions import ObjectDoesNotExist
 # Create your models here.
 # Todo update all classes to check permissions before progressing. Add this logic into the methods to onboard users or update records
 # Todo build the onboard users class
-# Todo test that a credential delete does not cascade
-# Build a class called on a User Delete that will obfuscate the important user data - mostly in User_info but also card names and other things like display names
+# Todo Redefine the CASCADE parameters and develop methods that on a user delete will obfuscate the user information and keep it
 
 
 def json_dict_generator(indict, pre=None):
@@ -152,7 +151,7 @@ class Providers(models.Model):
 class Token(models.Model):
     # establishes a token for a user at a given provider
     credentials_id = models.CharField(max_length=128, primary_key=True)
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.DO_NOTHING)
     provider_id = models.ForeignKey(Providers, unique=False, on_delete=models.DO_NOTHING)
     access_token = models.TextField()
     refresh_token = models.TextField()
@@ -175,7 +174,7 @@ class Token(models.Model):
         user = User.objects.get(username=username)
         return cls.objects.filter(user_id=user.id, provider_id=provider_id).exists()
 
-    @classmethod # todo add a test to simple see if it works
+    @classmethod # todo add a test to simply see if it works
     def get_credential_ids(cls, username):
         # returns a list of all token credentials for a given user
         user = User.objects.get(username=username)
@@ -252,8 +251,10 @@ class Token(models.Model):
         if z.status_code == 200:  # check if API call is a success
             return({'credentials_id':results['credentials_id'],'validated_scope':results['scopes']})
         else:
-            status = {'code': 400, 'desc': 'API failure. Test for TrueLayer connectivity to token meta data APIs.'}
-            return(status)
+            return ({'code': 400,
+                     'desc': 'Truelayer Token Metadata API failure. TL error code = %s and message = %s' % (
+                         z.status_code, z.json()['error'])
+                     })
 
     @classmethod # todo add a test to simply see if it works
     def get_new_token(cls, username, provider_id, access_code):
@@ -262,8 +263,7 @@ class Token(models.Model):
 
         # determine if the user / provider combination already exist
         if Token.token_exists(username, provider_id) == True:
-            status = {'code': 400, 'desc': 'User/provider combination already exist.'}
-            return (status)
+            return ({'code': 400, 'desc': 'User/provider combination already exist.'})
 
         # the user / provider combination does not exist so call Truelayer and exchange code for access token
         else:
@@ -295,11 +295,13 @@ class Token(models.Model):
                 )
                 # save the data
                 data_update.save()
-                status = {'code': 200, 'desc': 'Success'}
-                return (status)
+                return ({'code': 200, 'desc': 'Success'})
+
             else:
-                status = {'code': 400, 'desc': 'API failure. Test for TrueLayer connectivity to token request APIs.'}
-                return (status)
+                return ({'code': 400,
+                         'desc': 'Truelayer Token Access API failure. TL error code = %s and message = %s' % (
+                             z.status_code, z.json()['error'])
+                         })
 
     @classmethod # todo add a test to simply see if it works
     def update_refresh_token(cls,credentials_id):
@@ -342,7 +344,7 @@ class Token(models.Model):
 
 class User_info(models.Model):
     # gathers user information from TrueLayer as provided by the bank
-    credentials_id = models.ForeignKey(Token, unique=False, on_delete=models.DO_NOTHING)
+    credentials_id = models.ForeignKey(Token, unique=False, on_delete=models.CASCADE)
     full_name = models.CharField(max_length=150)
     date_of_birth = models.DateTimeField(default=None, null=True)
     update_timestamp = models.DateTimeField()
@@ -527,7 +529,7 @@ class Tl_model_updates(models.Model):
 
 class Account(models.Model):
     # list account details for a given token.  multiple accounts may exist per token
-    credentials_id = models.ForeignKey(Token, on_delete=models.DO_NOTHING)
+    credentials_id = models.ForeignKey(Token, on_delete=models.CASCADE)
     account_id = models.CharField(max_length=100, primary_key=True)
     account_type = models.CharField(max_length=50)
     account_number_iban = models.CharField(max_length=34, null=True)
@@ -656,6 +658,8 @@ class Account_balance(models.Model):
             url = "%s/%s/balance" % (access_info['account_url'],account_list[i]['account_id'])
             z = requests.get(url, headers=headers)
 
+            print(z.json)
+
             # check API status code and if OK, iterate over the results and update records
             if z.status_code == 200:
                 results = z.json()['results']
@@ -772,7 +776,7 @@ class Account_trans(models.Model):
 
 class Cards(models.Model):
     # list account details for a given token.  multiple accounts may exist per token
-    credentials_id = models.ForeignKey(Token, on_delete=models.DO_NOTHING)
+    credentials_id = models.ForeignKey(Token, on_delete=models.CASCADE)
     card_account_id = models.CharField(max_length=100, primary_key=True)
     card_network = models.CharField(max_length=50)
     card_type = models.CharField(max_length=50)
@@ -1033,3 +1037,43 @@ class Card_account_trans(models.Model):
                              z.status_code, z.json()['error'])
                          })
         return ({'code': 200, 'desc': 'Success'})
+
+def user_setup(username, provider_id, access_code):
+    # fully establishes a TrueLayer user after they have registered for the site
+    user = User.objects.get(username=username)
+
+    # setup process. gather user data from a successful TL registration.
+    #if Token.get_new_token(username, provider_id, access_code)['code'] == 200:
+    if 200 == 200:
+        # get token metadata which tells us the scope approved for a user & provider combination
+        scope = Token.objects.values('validated_scope').get(user_id=user.id)['validated_scope']
+        print("scope = %s" % scope)
+        if 'info' in scope:
+            print("info in scope, getting user details")
+            if User_info.get_tl_user_info_update(username)['code']!=200:
+                return('oops, user update failed') #Todo, improve the notice since this will fail out of the routine
+
+        # get account details if accounts are in scope
+        if 'accounts' in scope:
+            print("getting account details")
+            # call account api
+            if 'balance' in scope:
+                print("account balance in scope, getting balance")
+                # call balance api
+            if 'transactions' in scope:
+                print("account transactions in scope, getting transactions")
+                # call transaction api
+
+        # get card details if cards are in scope
+        if 'cards' in scope:
+            print("getting card details")
+            # call cards api
+            if 'balance' in scope:
+                print("card balance in scope, getting balance")
+                # call card balance
+            if 'transactions' in scope:
+                print("card transactions in scope, getting transactions")
+    else:
+        return('API call failed') #Todo, improve this messaging in case of failure
+
+    return('all done')
