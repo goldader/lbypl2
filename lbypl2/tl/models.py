@@ -214,7 +214,7 @@ class Token(models.Model):
                 status = Token.update_refresh_token(v[i]['credentials_id'])
                 if status['code']==400:
                     return {'code': 400, 'desc': 'Token refresh failed.'}
-        return (cls.objects.values('credentials_id', 'access_token').filter(user_id=user.id))
+        return (cls.objects.values('credentials_id', 'access_token','validated_scope').filter(user_id=user.id))
 
     @classmethod
     def get_access_token_one(cls,credentials_id):
@@ -295,7 +295,7 @@ class Token(models.Model):
                 )
                 # save the data
                 data_update.save()
-                return ({'code': 200, 'desc': 'Success'})
+                return ({'code': 200, 'desc': 'Success', 'validated_scope': md_response['validated_scope']})
 
             else:
                 return ({'code': 400,
@@ -377,93 +377,98 @@ class User_info(models.Model):
 
         # iterate over the tokens to get all information
         for token in token_list:
-            token_phrase = "Bearer %s" % token['access_token']
-            headers = {'Authorization': token_phrase}
-            z = requests.get(access_info['info_url'], headers=headers)
-            results = z.json()['results']
+            # check if info is in scope and if not pass
+            if 'info' in token['validated_scope']:
+                token_phrase = "Bearer %s" % token['access_token']
+                headers = {'Authorization': token_phrase}
+                z = requests.get(access_info['info_url'], headers=headers)
+                results = z.json()['results']
 
-            # check API status code and if OK, iterate over the results and update records
-            if z.status_code == 200:
-                try:
-                    #  get ids of existing records for the credentials since we cannot tell 100% if a new record is an update to an old
-                    old_records = User_info.objects.filter(credentials_id=token['credentials_id'])
+                # check API status code and if OK, iterate over the results and update records
+                if z.status_code == 200:
+                    try:
+                        #  get ids of existing records for the credentials since we cannot tell 100% if a new record is an update to an old
+                        old_records = User_info.objects.filter(credentials_id=token['credentials_id'])
 
-                    # delete old records
-                    if old_records.exists():
-                        old_records.delete()
+                        # delete old records
+                        if old_records.exists():
+                            old_records.delete()
 
-                    for i in range(0,len(results)):
-                        update_time = results[i]['update_timestamp']
+                        for i in range(0,len(results)):
+                            update_time = results[i]['update_timestamp']
 
-                        # if TL does not return the field, set it to None for Django sanity, this can be replaced once we develop a serialiser
-                        for field in User_info.include_fields():
-                            if field not in results[i].keys():
-                                results[i][field]=None
+                            # if TL does not return the field, set it to None for Django sanity, this can be replaced once we develop a serialiser
+                            for field in User_info.include_fields():
+                                if field not in results[i].keys():
+                                    results[i][field]=None
 
-                        # write the new records
-                        try:
-                            # create user details first thusly setting a primary key for related tables
-                            user_info = cls.objects.create(credentials_id = Token.objects.get(credentials_id=token['credentials_id']),
-                                                           full_name = results[i]['full_name'],
-                                                           date_of_birth = results[i]['date_of_birth'],
-                                                           update_timestamp = update_time
-                                                           )
-                            new_record = cls.objects.get(credentials_id = token['credentials_id'], full_name = results[i]['full_name'])
+                            # write the new records
+                            try:
+                                # create user details first thusly setting a primary key for related tables
+                                user_info = cls.objects.create(credentials_id = Token.objects.get(credentials_id=token['credentials_id']),
+                                                               full_name = results[i]['full_name'],
+                                                               date_of_birth = results[i]['date_of_birth'],
+                                                               update_timestamp = update_time
+                                                               )
+                                new_record = cls.objects.get(credentials_id = token['credentials_id'], full_name = results[i]['full_name'])
 
-                            # check if address details exist.  If so, attribute and process into the addresses model
-                            # there may be more than 1 address per name so loop through addresses
-                            if 'addresses' in results[i].keys():
-                                addresses = results[i]['addresses']
+                                # check if address details exist.  If so, attribute and process into the addresses model
+                                # there may be more than 1 address per name so loop through addresses
+                                if 'addresses' in results[i].keys():
+                                    addresses = results[i]['addresses']
 
-                                for address in addresses:
-                                    # attribute the address records to None where no data is sent through
-                                    for field in User_addresses.include_fields():
-                                        if field not in address.keys():
-                                                address[field] = ''
-                                    # write the results to the model
-                                    try:
-                                        user_address = User_addresses.objects.create(
-                                            user_info_id = new_record,
-                                            address=address['address'],
-                                            city=address['city'],
-                                            zip=address['zip'],
-                                            country=address['country'],
+                                    for address in addresses:
+                                        # attribute the address records to None where no data is sent through
+                                        for field in User_addresses.include_fields():
+                                            if field not in address.keys():
+                                                    address[field] = ''
+                                        # write the results to the model
+                                        try:
+                                            user_address = User_addresses.objects.create(
+                                                user_info_id = new_record,
+                                                address=address['address'],
+                                                city=address['city'],
+                                                zip=address['zip'],
+                                                country=address['country'],
+                                                )
+                                        except:
+                                            raise Exception('Unknown db error during address creation')
+
+                                # check if there are phone details and if so, write them to the phone model
+                                if 'phones' in results[i].keys():
+                                    phones = results[i]['phones']
+                                    for phone in phones:
+                                        try:
+                                            user_phone = User_phones.objects.create(
+                                                user_info_id = new_record,
+                                                phones=phone.strip()
                                             )
-                                    except:
-                                        raise Exception('Unknown db error during address creation')
+                                        except:
+                                            raise Exception('Unknown db error during phone creation')
 
-                            # check if there are phone details and if so, write them to the phone model
-                            if 'phones' in results[i].keys():
-                                phones = results[i]['phones']
-                                for phone in phones:
-                                    try:
-                                        user_phone = User_phones.objects.create(
-                                            user_info_id = new_record,
-                                            phones=phone.strip()
-                                        )
-                                    except:
-                                        raise Exception('Unknown db error during phone creation')
-
-                            # check if there are emails and if so, write them to the email model
-                            if 'emails' in results[i].keys():
-                                emails = results[i]['emails']
-                                for email in emails:
-                                    try:
-                                        user_email = User_emails.objects.create(
-                                            user_info_id = new_record,
-                                            emails=email.strip()
-                                        )
-                                    except:
-                                        raise Exception('Unknown db error during email creation')
-                        except:
-                            raise Exception('Unknown db error during user info record creation.')
-                except:
-                    raise Exception('Unknown db error during delete of old records')
+                                # check if there are emails and if so, write them to the email model
+                                if 'emails' in results[i].keys():
+                                    emails = results[i]['emails']
+                                    for email in emails:
+                                        try:
+                                            user_email = User_emails.objects.create(
+                                                user_info_id = new_record,
+                                                emails=email.strip()
+                                            )
+                                        except:
+                                            raise Exception('Unknown db error during email creation')
+                            except:
+                                raise Exception('Unknown db error during user info record creation.')
+                    except:
+                        raise Exception('Unknown db error during delete of old records')
+                else:
+                    return ({'code': 400,
+                              'desc': 'Truelayer User Info API failure. TL error code = %s and message = %s' % (
+                              z.status_code, z.json()['error'])
+                              })
             else:
-                return ({'code': 400,
-                          'desc': 'Truelayer User Info API failure. TL error code = %s and message = %s' % (
-                          z.status_code, z.json()['error'])
-                          })
+                # 'info' is not in scope so skip this token
+                pass
         return({'code': 200,'desc': 'Success'})
 
 class User_addresses(models.Model):
@@ -568,45 +573,49 @@ class Account(models.Model):
 
         # iterate over the tokens to get all information
         for token in token_list:
-            token_phrase = "Bearer %s" % token['access_token']
-            headers = {'Authorization': token_phrase}
-            z = requests.get(access_info['account_url'], headers=headers)
-            results = z.json()['results']
+            # check if account is in scope and if not pass
+            if 'account' in token['validated_scope']:
+                token_phrase = "Bearer %s" % token['access_token']
+                headers = {'Authorization': token_phrase}
+                z = requests.get(access_info['account_url'], headers=headers)
+                results = z.json()['results']
 
-            # check API status code and if OK, iterate over the results and update records
-            if z.status_code == 200: #Todo add a test and a trap for a provider_id that does not exist in the Providers table. If this happens, run provider update
-                try:
-                    for i in range(0,len(results)):
-                        # flatten the embedded records
-                        new_results = json_output(results[i])
+                # check API status code and if OK, iterate over the results and update records
+                if z.status_code == 200: #Todo add a test and a trap for a provider_id that does not exist in the Providers table. If this happens, run provider update
+                    try:
+                        for i in range(0,len(results)):
+                            # flatten the embedded records
+                            new_results = json_output(results[i])
 
-                        # if TL does not return the field, set it to None for Django sanity, this can be replaced once we develop a serialiser
-                        for field in Account.include_fields():
-                            if field not in new_results.keys():
-                                new_results[field]=None
+                            # if TL does not return the field, set it to None for Django sanity, this can be replaced once we develop a serialiser
+                            for field in Account.include_fields():
+                                if field not in new_results.keys():
+                                    new_results[field]=None
 
-                        # write the new records
-                        account_info = cls(
-                            credentials_id = Token.objects.get(credentials_id=token['credentials_id']),
-                            account_id = new_results['account_id'],
-                            account_type = new_results['account_type'],
-                            account_number_iban = new_results['account_number_iban'],
-                            account_number_number = new_results['account_number_number'],
-                            account_number_sort_code = new_results['account_number_sort_code'],
-                            account_number_swift_bic = new_results['account_number_swift_bic'],
-                            currency = new_results['currency'],
-                            display_name = new_results['display_name'],
-                            update_timestamp = new_results['update_timestamp'],
-                            provider_id = Providers.objects.get(provider_id = new_results['provider_provider_id'])
-                        )
-                        account_info.save()
-                except:
-                    raise Exception('Unknown db error')
+                            # write the new records
+                            account_info = cls(
+                                credentials_id = Token.objects.get(credentials_id=token['credentials_id']),
+                                account_id = new_results['account_id'],
+                                account_type = new_results['account_type'],
+                                account_number_iban = new_results['account_number_iban'],
+                                account_number_number = new_results['account_number_number'],
+                                account_number_sort_code = new_results['account_number_sort_code'],
+                                account_number_swift_bic = new_results['account_number_swift_bic'],
+                                currency = new_results['currency'],
+                                display_name = new_results['display_name'],
+                                update_timestamp = new_results['update_timestamp'],
+                                provider_id = Providers.objects.get(provider_id = new_results['provider_provider_id'])
+                            )
+                            account_info.save()
+                    except:
+                        raise Exception('Unknown db error')
+                else:
+                    return ({'code': 400,
+                              'desc': 'Truelayer User Account API failure. TL error code = %s and message = %s' % (
+                              z.status_code, z.json()['error'])
+                             })
             else:
-                return ({'code': 400,
-                          'desc': 'Truelayer User Account API failure. TL error code = %s and message = %s' % (
-                          z.status_code, z.json()['error'])
-                         })
+                pass
         return({'code': 200,'desc':'Success'})
 
 class Account_balance(models.Model):
@@ -652,38 +661,41 @@ class Account_balance(models.Model):
 
         # iterate over the tokens to get all information
         for i in range(0,len(account_list)):
-            access_token = Token.get_access_token_one(account_list[i]['credentials_id'])
-            token_phrase = "Bearer %s" % access_token
-            headers = {'Authorization': token_phrase}
-            url = "%s/%s/balance" % (access_info['account_url'],account_list[i]['account_id'])
-            z = requests.get(url, headers=headers)
+            scope = Token.objects.values('validated_scope').filter(credentials_id = account_list[i]['credentials_id'])
+            # test if accounts and balance are in scope
+            if all(x in scope[0]['validated_scope'] for x in ['accounts', 'balance']):
+                access_token = Token.get_access_token_one(account_list[i]['credentials_id'])
+                token_phrase = "Bearer %s" % access_token
+                headers = {'Authorization': token_phrase}
+                url = "%s/%s/balance" % (access_info['account_url'],account_list[i]['account_id'])
+                z = requests.get(url, headers=headers)
 
-            print(z.json)
-
-            # check API status code and if OK, iterate over the results and update records
-            if z.status_code == 200:
-                results = z.json()['results']
-                try:
-                    # if TL does not return the field, set it to None for Django sanity, this can be replaced once we develop a serialiser
-                    for field in Account_balance.include_fields():
-                        if field not in results[0].keys():
-                            results[0][field]=None
-                    # write the new records
-                    account_balance = cls(
-                        account_id = Account.objects.get(account_id = account_list[i]['account_id']),
-                        available = results[0]['available'],
-                        currency = results[0]['currency'],
-                        current = results[0]['current'],
-                        update_timestamp = results[0]['update_timestamp']
-                        )
-                    account_balance.save()
-                except:
-                    raise Exception('Unknown db error')
+                # check API status code and if OK, iterate over the results and update records
+                if z.status_code == 200:
+                    results = z.json()['results']
+                    try:
+                        # if TL does not return the field, set it to None for Django sanity, this can be replaced once we develop a serialiser
+                        for field in Account_balance.include_fields():
+                            if field not in results[0].keys():
+                                results[0][field]=None
+                        # write the new records
+                        account_balance = cls(
+                            account_id = Account.objects.get(account_id = account_list[i]['account_id']),
+                            available = results[0]['available'],
+                            currency = results[0]['currency'],
+                            current = results[0]['current'],
+                            update_timestamp = results[0]['update_timestamp']
+                            )
+                        account_balance.save()
+                    except:
+                        raise Exception('Unknown db error')
+                else:
+                    return ({'code': 400,
+                              'desc': 'Truelayer Account Balance API failure. TL error code = %s and message = %s' % (
+                              z.status_code, z.json()['error'])
+                             })
             else:
-                return ({'code': 400,
-                          'desc': 'Truelayer Account Balance API failure. TL error code = %s and message = %s' % (
-                          z.status_code, z.json()['error'])
-                         })
+                pass
         return({'code': 200,'desc':'Success'})
 
 class Account_trans(models.Model):
@@ -718,60 +730,65 @@ class Account_trans(models.Model):
 
         # iterate over the tokens to get all information
         for i in range(0, len(account_list)):
-            # establish the correct url string for each account
-            access_token = Token.get_access_token_one(account_list[i]['credentials_id'])
-            token_phrase = "Bearer %s" % access_token
-            headers = {'Authorization': token_phrase}
+            scope = Token.objects.values('validated_scope').filter(credentials_id = account_list[i]['credentials_id'])
+            # test if accounts and balance are in scope
+            if all(x in scope[0]['validated_scope'] for x in ['accounts', 'transactions']):
+                # establish the correct url string for each account
+                access_token = Token.get_access_token_one(account_list[i]['credentials_id'])
+                token_phrase = "Bearer %s" % access_token
+                headers = {'Authorization': token_phrase}
 
-            try: # trap for null recordsets
-                latest = Account_trans.objects.values_list('timestamp').filter(account_id = account_list[i]['account_id']).latest('timestamp')
-                f_date = latest[0].strftime("%Y-%m-%d")
-            except ObjectDoesNotExist:
-                f_date = (timezone.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+                try: # trap for null recordsets
+                    latest = Account_trans.objects.values_list('timestamp').filter(account_id = account_list[i]['account_id']).latest('timestamp')
+                    f_date = latest[0].strftime("%Y-%m-%d")
+                except ObjectDoesNotExist:
+                    f_date = (timezone.now() - timedelta(days=365)).strftime("%Y-%m-%d")
 
-            t_date = timezone.now().strftime("%Y-%m-%d")
+                t_date = timezone.now().strftime("%Y-%m-%d")
 
-            url = "%s/%s/transactions?from=%s&to=%s" % (access_info['account_url'], account_list[i]['account_id'],f_date,t_date)
-            z = requests.get(url, headers=headers)
+                url = "%s/%s/transactions?from=%s&to=%s" % (access_info['account_url'], account_list[i]['account_id'],f_date,t_date)
+                z = requests.get(url, headers=headers)
 
-            if z.status_code == 200:
-                results = z.json()['results']
+                if z.status_code == 200:
+                    results = z.json()['results']
 
-                # check for fields that are not provided so Django is happy (prefer NoSQL approach)
-                include_fields = Account_trans.include_fields()
+                    # check for fields that are not provided so Django is happy (prefer NoSQL approach)
+                    include_fields = Account_trans.include_fields()
 
-                # set the accoutn in advance so it is not called during looping
-                account=Account.objects.get(account_id = account_list[i]['account_id']) #todo check other places to pull ID setting out of the loop and update where appropriate
+                    # set the accoutn in advance so it is not called during looping
+                    account=Account.objects.get(account_id = account_list[i]['account_id']) #todo check other places to pull ID setting out of the loop and update where appropriate
 
-                for i in range(0,len(results)):
-                    new_results = results[i]
+                    for i in range(0,len(results)):
+                        new_results = results[i]
 
-                    # check the include fields (keeping Django happy again)
-                    for field in include_fields: # Todo refactor to a comprehension for speed
-                        if field not in new_results.keys():
-                            new_results[field] = None
+                        # check the include fields (keeping Django happy again)
+                        for field in include_fields: # Todo refactor to a comprehension for speed
+                            if field not in new_results.keys():
+                                new_results[field] = None
 
-                    # write the data out (no bulk adds in Django ... thank you django, let's add 1 by 1)
-                    try:
-                        account_trans = cls(
-                            account_id=account,
-                            transaction_id = new_results['transaction_id'],
-                            timestamp = new_results['timestamp'],
-                            description = new_results['description'],
-                            transaction_type = new_results['transaction_type'],
-                            transaction_category = new_results['transaction_category'],
-                            amount = new_results['amount'],
-                            currency = new_results['currency'],
-                            meta = new_results['meta'],
-                           )
-                        account_trans.save()
-                    except:
-                        raise Exception('Unknown db error')
+                        # write the data out (no bulk adds in Django ... thank you django, let's add 1 by 1)
+                        try:
+                            account_trans = cls(
+                                account_id=account,
+                                transaction_id = new_results['transaction_id'],
+                                timestamp = new_results['timestamp'],
+                                description = new_results['description'],
+                                transaction_type = new_results['transaction_type'],
+                                transaction_category = new_results['transaction_category'],
+                                amount = new_results['amount'],
+                                currency = new_results['currency'],
+                                meta = new_results['meta'],
+                               )
+                            account_trans.save()
+                        except:
+                            raise Exception('Unknown db error')
+                else:
+                    return ({'code': 400,
+                             'desc': 'Truelayer Account Transaction API failure. TL error code = %s and message = %s' % (
+                                 z.status_code, z.json()['error'])
+                             })
             else:
-                return ({'code': 400,
-                         'desc': 'Truelayer Account Transaction API failure. TL error code = %s and message = %s' % (
-                             z.status_code, z.json()['error'])
-                         })
+                pass
         return ({'code': 200, 'desc': 'Success'})
 
 class Cards(models.Model):
@@ -816,53 +833,57 @@ class Cards(models.Model):
 
         # iterate over the tokens to get all information
         for token in token_list:
-            token_phrase = "Bearer %s" % token['access_token']
-            headers = {'Authorization': token_phrase}
-            z = requests.get(access_info['card_url'], headers=headers)
-            results = z.json()['results']
+            # check if account is in scope and if not pass
+            if 'cards' in token['validated_scope']:
+                token_phrase = "Bearer %s" % token['access_token']
+                headers = {'Authorization': token_phrase}
+                z = requests.get(access_info['card_url'], headers=headers)
+                results = z.json()['results']
 
-            # check API status code and if OK, iterate over the results and update records
-            if z.status_code == 200: #Todo add a test and a trap for a provider_id that does not exist in the Providers table. If this happens, run provider update
-                try:
-                    for i in range(0,len(results)):
-                        # flatten the embedded records
-                        new_results = results[i]
+                # check API status code and if OK, iterate over the results and update records
+                if z.status_code == 200: #Todo add a test and a trap for a provider_id that does not exist in the Providers table. If this happens, run provider update
+                    try:
+                        for i in range(0,len(results)):
+                            # flatten the embedded records
+                            new_results = results[i]
 
-                        # if TL does not return the field, set it to None for Django sanity, this can be replaced once we develop a serialiser
-                        for field in Cards.include_fields():
-                            if field not in new_results.keys():
-                                new_results[field]=None
+                            # if TL does not return the field, set it to None for Django sanity, this can be replaced once we develop a serialiser
+                            for field in Cards.include_fields():
+                                if field not in new_results.keys():
+                                    new_results[field]=None
 
-                        # write the new records
-                        card_info = cls(
-                            credentials_id = Token.objects.get(credentials_id=token['credentials_id']),
-                            card_account_id = new_results['account_id'],
-                            card_network = new_results['card_network'],
-                            card_type = new_results['card_type'],
-                            currency = new_results['currency'],
-                            display_name = new_results['display_name'],
-                            partial_card_number = new_results['partial_card_number'],
-                            name_on_card = new_results['name_on_card'],
-                            valid_from = new_results['valid_from'],
-                            valid_to = new_results['valid_to'],
-                            update_timestamp = new_results['update_timestamp'],
-                            provider_meta = new_results['provider']
-                        )
-                        card_info.save()
+                            # write the new records
+                            card_info = cls(
+                                credentials_id = Token.objects.get(credentials_id=token['credentials_id']),
+                                card_account_id = new_results['account_id'],
+                                card_network = new_results['card_network'],
+                                card_type = new_results['card_type'],
+                                currency = new_results['currency'],
+                                display_name = new_results['display_name'],
+                                partial_card_number = new_results['partial_card_number'],
+                                name_on_card = new_results['name_on_card'],
+                                valid_from = new_results['valid_from'],
+                                valid_to = new_results['valid_to'],
+                                update_timestamp = new_results['update_timestamp'],
+                                provider_meta = new_results['provider']
+                            )
+                            card_info.save()
 
-                except:
-                    raise Exception('Unknown db error')
+                    except:
+                        raise Exception('Unknown db error')
+                else:
+                    return ({'code': 400,
+                              'desc': 'Truelayer Card Account API failure. TL error code = %s and message = %s' % (
+                              z.status_code, z.json()['error'])
+                             })
             else:
-                return ({'code': 400,
-                          'desc': 'Truelayer Card Account API failure. TL error code = %s and message = %s' % (
-                          z.status_code, z.json()['error'])
-                         })
+                pass
         return({'code': 200,'desc':'Success'})
 
 class Card_account_balance(models.Model):
     card_account_id = models.ForeignKey(Cards, on_delete=models.CASCADE)
     available = models.DecimalField(max_digits=13, decimal_places=2, null=True)
-    currency = models.CharField(max_length=3)
+    currency = models.CharField(max_length=3, null=True)
     current = models.DecimalField(max_digits=13, decimal_places=2, null=True)
     credit_limit = models.DecimalField(max_digits=13, decimal_places=2, null=True)
     last_statement_balance = models.DecimalField(max_digits=13, decimal_places=2, null=True)
@@ -910,44 +931,49 @@ class Card_account_balance(models.Model):
 
         # iterate over the tokens to get all information
         for i in range(0, len(account_list)):
-            access_token = Token.get_access_token_one(account_list[i]['credentials_id'])
-            token_phrase = "Bearer %s" % access_token
-            headers = {'Authorization': token_phrase}
-            url = "%s/%s/balance" % (access_info['card_url'], account_list[i]['card_account_id'])
-            z = requests.get(url, headers=headers)
+            scope = Token.objects.values('validated_scope').filter(credentials_id = account_list[i]['credentials_id'])
+            # test if cards and balance are in scope
+            if all(x in scope[0]['validated_scope'] for x in ['cards', 'balance']):
+                access_token = Token.get_access_token_one(account_list[i]['credentials_id'])
+                token_phrase = "Bearer %s" % access_token
+                headers = {'Authorization': token_phrase}
+                url = "%s/%s/balance" % (access_info['card_url'], account_list[i]['card_account_id'])
+                z = requests.get(url, headers=headers)
 
-            # check API status code and if OK, iterate over the results and update records
-            if z.status_code == 200:
-                results = z.json()['results']
-                new_results = results[0]
-                try:
-                    # if TL does not return the field, set it to None for Django sanity, this can be replaced once we develop a serialiser
-                    for field in Account_balance.include_fields():
-                        if field not in new_results.keys():
-                            new_results[field] = None
+                # check API status code and if OK, iterate over the results and update records
+                if z.status_code == 200:
+                    results = z.json()['results']
+                    new_results = results[0]
+                    try:
+                        # if TL does not return the field, set it to None for Django sanity, this can be replaced once we develop a serialiser
+                        for field in Card_account_balance.include_fields():
+                            if field not in new_results.keys():
+                                new_results[field] = None
 
-                    # write the new records
-                    card_balance = cls(
-                        card_account_id = Cards.objects.get(card_account_id = account_list[i]['card_account_id']),
-                        available = new_results['available'],
-                        currency = new_results['currency'],
-                        current = new_results['current'],
-                        credit_limit = new_results['credit_limit'],
-                        last_statement_balance = new_results['last_statement_balance'],
-                        last_statement_date = new_results['last_statement_date'],
-                        payment_due = new_results['payment_due'],
-                        payment_due_date = new_results['payment_due_date'],
-                        update_timestamp = new_results['update_timestamp']
-                    )
-                    card_balance.save()
+                        # write the new records
+                        card_balance = cls(
+                            card_account_id = Cards.objects.get(card_account_id = account_list[i]['card_account_id']),
+                            available = new_results['available'],
+                            currency = new_results['currency'],
+                            current = new_results['current'],
+                            credit_limit = new_results['credit_limit'],
+                            last_statement_balance = new_results['last_statement_balance'],
+                            last_statement_date = new_results['last_statement_date'],
+                            payment_due = new_results['payment_due'],
+                            payment_due_date = new_results['payment_due_date'],
+                            update_timestamp = new_results['update_timestamp']
+                        )
+                        card_balance.save()
 
-                except:
-                    raise Exception('Unknown db error')
+                    except:
+                        raise Exception('Unknown db error')
+                else:
+                    return ({'code': 400,
+                             'desc': 'Truelayer Card Balance API failure. TL error code = %s and message = %s' % (
+                                 z.status_code, z.json()['error'])
+                             })
             else:
-                return ({'code': 400,
-                         'desc': 'Truelayer Card Balance API failure. TL error code = %s and message = %s' % (
-                             z.status_code, z.json()['error'])
-                         })
+                pass
         return ({'code': 200, 'desc': 'Success'})
 
 class Card_account_trans(models.Model):
@@ -982,98 +1008,150 @@ class Card_account_trans(models.Model):
 
         # iterate over the tokens to get all information
         for i in range(0, len(account_list)):
-            # establish the correct url string for each account
-            access_token = Token.get_access_token_one(account_list[i]['credentials_id'])
-            token_phrase = "Bearer %s" % access_token
-            headers = {'Authorization': token_phrase}
+            scope = Token.objects.values('validated_scope').filter(credentials_id = account_list[i]['credentials_id'])
+            # test if accounts and balance are in scope
+            if all(x in scope[0]['validated_scope'] for x in ['cards', 'transactions']):
+                # establish the correct url string for each account
+                access_token = Token.get_access_token_one(account_list[i]['credentials_id'])
+                token_phrase = "Bearer %s" % access_token
+                headers = {'Authorization': token_phrase}
 
-            try: # trap for null recordsets
-                latest = Card_account_trans.objects.values_list('timestamp').filter(card_account_id = account_list[i]['card_account_id']).latest('timestamp')
-                f_date = latest[0].strftime("%Y-%m-%d")
-            except ObjectDoesNotExist:
-                f_date = (timezone.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+                try: # trap for null recordsets
+                    latest = Card_account_trans.objects.values_list('timestamp').filter(card_account_id = account_list[i]['card_account_id']).latest('timestamp')
+                    f_date = latest[0].strftime("%Y-%m-%d")
+                except ObjectDoesNotExist:
+                    f_date = (timezone.now() - timedelta(days=365)).strftime("%Y-%m-%d")
 
-            t_date = timezone.now().strftime("%Y-%m-%d")
+                t_date = timezone.now().strftime("%Y-%m-%d")
 
-            url = "%s/%s/transactions?from=%s&to=%s" % (access_info['card_url'], account_list[i]['card_account_id'],f_date,t_date)
-            z = requests.get(url, headers=headers)
+                url = "%s/%s/transactions?from=%s&to=%s" % (access_info['card_url'], account_list[i]['card_account_id'],f_date,t_date)
+                z = requests.get(url, headers=headers)
 
-            if z.status_code == 200:
-                results = z.json()['results']
+                if z.status_code == 200:
+                    results = z.json()['results']
 
-                # check for fields that are not provided so Django is happy (prefer NoSQL approach)
-                include_fields = Card_account_trans.include_fields()
+                    # check for fields that are not provided so Django is happy (prefer NoSQL approach)
+                    include_fields = Card_account_trans.include_fields()
 
-                # set the accoutn in advance so it is not called during looping
-                account=Cards.objects.get(card_account_id = account_list[i]['card_account_id'])
+                    # set the accoutn in advance so it is not called during looping
+                    account=Cards.objects.get(card_account_id = account_list[i]['card_account_id'])
 
-                for i in range(0,len(results)):
-                    new_results = results[i]
+                    for i in range(0,len(results)):
+                        new_results = results[i]
 
-                    # check the include fields (keeping Django happy again)
-                    for field in include_fields: # Todo refactor to a comprehension for speed
-                        if field not in new_results.keys():
-                            new_results[field] = None
+                        # check the include fields (keeping Django happy again)
+                        for field in include_fields: # Todo refactor to a comprehension for speed
+                            if field not in new_results.keys():
+                                new_results[field] = None
 
-                    # write the data out (no bulk adds in Django ... thank you django, let's add 1 by 1)
-                    try:
-                        account_trans = cls(
-                            card_account_id=account,
-                            transaction_id = new_results['transaction_id'],
-                            timestamp = new_results['timestamp'],
-                            description = new_results['description'],
-                            transaction_type = new_results['transaction_type'],
-                            transaction_category = new_results['transaction_category'],
-                            amount = new_results['amount'],
-                            currency = new_results['currency'],
-                            meta = new_results['meta'],
-                           )
-                        account_trans.save()
-                    except:
-                        raise Exception('Unknown db error')
+                        # write the data out (no bulk adds in Django ... thank you django, let's add 1 by 1)
+                        try:
+                            account_trans = cls(
+                                card_account_id=account,
+                                transaction_id = new_results['transaction_id'],
+                                timestamp = new_results['timestamp'],
+                                description = new_results['description'],
+                                transaction_type = new_results['transaction_type'],
+                                transaction_category = new_results['transaction_category'],
+                                amount = new_results['amount'],
+                                currency = new_results['currency'],
+                                meta = new_results['meta'],
+                               )
+                            account_trans.save()
+                        except:
+                            raise Exception('Unknown db error')
+                else:
+                    return ({'code': 400,
+                             'desc': 'Truelayer Card Transaction API failure. TL error code = %s and message = %s' % (
+                                 z.status_code, z.json()['error'])
+                             })
             else:
-                return ({'code': 400,
-                         'desc': 'Truelayer Card Transaction API failure. TL error code = %s and message = %s' % (
-                             z.status_code, z.json()['error'])
-                         })
+                pass
         return ({'code': 200, 'desc': 'Success'})
 
 def user_setup(username, provider_id, access_code):
     # fully establishes a TrueLayer user after they have registered for the site
     user = User.objects.get(username=username)
 
-    # setup process. gather user data from a successful TL registration.
-    #if Token.get_new_token(username, provider_id, access_code)['code'] == 200:
-    if 200 == 200:
-        # get token metadata which tells us the scope approved for a user & provider combination
-        scope = Token.objects.values('validated_scope').get(user_id=user.id)['validated_scope']
-        print("scope = %s" % scope)
-        if 'info' in scope:
-            print("info in scope, getting user details")
-            if User_info.get_tl_user_info_update(username)['code']!=200:
-                return('oops, user update failed') #Todo, improve the notice since this will fail out of the routine
+    status = []
 
+    # setup process. gather user data from a successful TL registration.
+    setup=Token.get_new_token(username, provider_id, access_code)
+
+    if setup['code'] == 200:
+        # get token metadata which tells us the scope approved for a user & provider combination
+        scope = setup['validated_scope']
+        if 'info' in scope:
+            if User_info.get_tl_user_info_update(username)['code'] != 200:
+                status.append({'code':400, 'desc':'Info update failed for %s' % username})
+                #return(status)
         # get account details if accounts are in scope
         if 'accounts' in scope:
-            print("getting account details")
-            # call account api
+            if Account.get_accounts_update(username)['code'] != 200:
+                status.append({'code':400, 'desc':'Account update failed. All account operations cancelled for %s' % username})
+                #return(status)
             if 'balance' in scope:
-                print("account balance in scope, getting balance")
-                # call balance api
+                if Account_balance.get_account_balances_update(username)['code'] != 200:
+                    status.append({'code': 401,'desc':'Partial Failure: Account Balance'})
             if 'transactions' in scope:
-                print("account transactions in scope, getting transactions")
-                # call transaction api
+                if Account_trans.get_account_trans(username)['code'] != 200:
+                    status.append({'code': 401, 'desc':'Partial Failure: Account Transactions'})
 
         # get card details if cards are in scope
         if 'cards' in scope:
-            print("getting card details")
-            # call cards api
+            if Cards.get_card_accounts_update(username)['code'] != 200:
+                status.append({'code':400, 'desc':'Card update failed. All card operations cancelled for %s' % username})
+                #return(status)
             if 'balance' in scope:
-                print("card balance in scope, getting balance")
-                # call card balance
+                if Card_account_balance.get_card_account_balances_update(username)['code'] != 200:
+                    status.append({'code': 401,'desc':'Partial Failure: Card Balance'})
             if 'transactions' in scope:
-                print("card transactions in scope, getting transactions")
+                if Card_account_trans.get_card_account_trans(username)['code'] != 200:
+                    status.append({'code': 401,'desc': 'Partial Failure: Card Transactions'})
     else:
-        return('API call failed') #Todo, improve this messaging in case of failure
+        return("oh shit, the new token call failed") #Todo, improve this messaging in case of failure
 
-    return('all done')
+    if not status:
+        return ({'code': 200, 'desc': 'Success'})
+    else:
+        return(status)
+
+def all_user_update():
+    # gets all user names from the database and updates all data
+    exclude_list = []
+
+    tokens = Token.objects.values('user').distinct()
+    status=[]
+
+    for token in tokens:
+        user = User.objects.get(id=token['user'])
+        username=user.username
+        if username in exclude_list:
+            print('Skipping the update of %s.' % username)
+        else:
+            print('Updating %s' % username)
+            # get account info updates (e.g. new telephone numbers)
+            if User_info.get_tl_user_info_update(username)['code'] != 200:
+                status.append({'code': 401, 'desc': 'Info update failed for %s' % username})
+            # get account updates (e.g. new accounts)
+            if Account.get_accounts_update(username)['code'] != 200:
+                status.append({'code': 401, 'desc': 'Account update failed for %s' % username})
+            # get account balance updates
+            if Account_balance.get_account_balances_update(username)['code'] != 200:
+                status.append({'code': 401, 'desc': 'Account Balance failed for %s ' % username})
+            # get account transactions and updates
+            if Account_trans.get_account_trans(username)['code'] != 200:
+                status.append({'code': 401, 'desc': 'Account Transactions failed for %s ' % username})
+            # get card account updates (e.g. new accounts)
+            if Cards.get_card_accounts_update(username)['code'] != 200:
+                status.append({'code': 401, 'desc': 'Card update failed for %s' % username})
+            # get card balance updates
+            if Card_account_balance.get_card_account_balances_update(username)['code'] != 200:
+                status.append({'code': 401, 'desc': 'Card Balance failed for %s ' % username})
+            if Card_account_trans.get_card_account_trans(username)['code'] != 200:
+                status.append({'code': 401, 'desc': 'Card Transactions failed for %s ' % username})
+
+    if not status:
+        return ({'code': 200, 'desc': 'Success'})
+    else:
+        return (status)
