@@ -705,6 +705,8 @@ class Account_trans(models.Model):
     description = models.TextField(null=True)
     transaction_type = models.CharField(max_length=50)
     transaction_category = models.CharField(max_length=50)
+    transaction_classification = models.TextField(null=True)
+    merchant_name = models.CharField(max_length=128, null=True)
     amount = models.DecimalField(max_digits=13,decimal_places=2)
     currency = models.CharField(max_length=3)
     meta = models.TextField(null=True)
@@ -775,6 +777,8 @@ class Account_trans(models.Model):
                                 description = new_results['description'],
                                 transaction_type = new_results['transaction_type'],
                                 transaction_category = new_results['transaction_category'],
+                                transaction_classification = new_results['transaction_classification'],
+                                merchant_name = new_results['merchant_name'],
                                 amount = new_results['amount'],
                                 currency = new_results['currency'],
                                 meta = new_results['meta'],
